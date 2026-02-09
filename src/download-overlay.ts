@@ -55,20 +55,6 @@ export class DownloadOverlay {
     document.body.appendChild(this.overlay);
   }
 
-  private getPositionStyles(): string {
-    switch (this.config.position) {
-      case 'top-right':
-        return 'top: 10px; right: 10px;';
-      case 'top-left':
-        return 'top: 10px; left: 10px;';
-      case 'bottom-left':
-        return 'bottom: 10px; left: 10px;';
-      case 'bottom-right':
-      default:
-        return 'bottom: 10px; right: 10px;';
-    }
-  }
-
   private async updateOverlay() {
     if (!this.overlay) return;
 
