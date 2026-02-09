@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Xibo Player Setup</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+
+    .container {
+      background: white;
+      border-radius: 12px;
+      box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+      padding: 40px;
+      max-width: 500px;
+      width: 100%;
+    }
+
+    h1 {
+      margin-bottom: 10px;
+      color: #333;
+      font-size: 28px;
+    }
+
+    p {
+      color: #666;
+      margin-bottom: 30px;
+      line-height: 1.5;
+    }
+
+    .form-group {
+      margin-bottom: 20px;
+    }
+
+    label {
+      display: block;
+      margin-bottom: 8px;
+      color: #333;
+      font-weight: 500;
+    }
+
+    input {
+      width: 100%;
+      padding: 12px;
+      border: 2px solid #e1e8ed;
+      border-radius: 6px;
+      font-size: 16px;
+      transition: border-color 0.3s;
+    }
+
+    input:focus {
+      outline: none;
+      border-color: #667eea;
+    }
+
+    button {
+      width: 100%;
+      padding: 14px;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+      border: none;
+      border-radius: 6px;
+      font-size: 16px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: transform 0.2s, box-shadow 0.2s;
+    }
+
+    button:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 5px 20px rgba(102, 126, 234, 0.4);
+    }
+
+    button:active {
+      transform: translateY(0);
+    }
+
+    .info {
+      margin-top: 20px;
+      padding: 15px;
+      background: #f8f9fa;
+      border-radius: 6px;
+      font-size: 14px;
+      color: #666;
+    }
+
+    .info code {
+      background: white;
+      padding: 2px 6px;
+      border-radius: 3px;
+      font-family: monospace;
+      color: #e83e8c;
+    }
+
+    .error {
+      margin-top: 15px;
+      padding: 12px;
+      background: #fee;
+      border: 1px solid #fcc;
+      border-radius: 6px;
+      color: #c33;
+      display: none;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Xibo Player Setup</h1>
+    <p>Configure your connection to the Xibo CMS.</p>
+
+    <form id="setup-form">
+      <div class="form-group">
+        <label for="cms-address">CMS Address</label>
+        <input
+          type="url"
+          id="cms-address"
+          placeholder="https://cms.example.com"
+          required
+        >
+      </div>
+
+      <div class="form-group">
+        <label for="cms-key">CMS Key</label>
+        <input
+          type="text"
+          id="cms-key"
+          placeholder="Your CMS secret key"
+          required
+        >
+      </div>
+
+      <div class="form-group">
+        <label for="display-name">Display Name</label>
+        <input
+          type="text"
+          id="display-name"
+          placeholder="My Display"
+          required
+        >
+      </div>
+
+      <button type="submit" id="submit-btn" disabled>Loading JavaScript...</button>
+    </form>
+
+    <div id="error" class="error"></div>
+  </div>
+
+  <script type="module">
+    // Persistent logging across reloads
+    function persistLog(msg) {
+      const logs = JSON.parse(sessionStorage.getItem('setupLogs') || '[]');
+      logs.push(`${new Date().toISOString()}: ${msg}`);
+      sessionStorage.setItem('setupLogs', JSON.stringify(logs));
+      console.log(msg);
+    }
+
+    // Show any previous logs
+    const prevLogs = sessionStorage.getItem('setupLogs');
+    if (prevLogs) {
+      console.log('=== PREVIOUS SESSION LOGS ===');
+      JSON.parse(prevLogs).forEach(log => console.log(log));
+      console.log('=== END PREVIOUS LOGS ===');
+    }
+
+    persistLog('[Setup] Script loading...');
+
+    import { config } from '@core/config.js';
+    import { XmdsClient } from '@core/xmds.js';
+
+    persistLog('[Setup] Modules imported');
+
+    const form = document.getElementById('setup-form');
+    const errorEl = document.getElementById('error');
+
+    persistLog('[Setup] Form found: ' + (form ? 'YES' : 'NO'));
+
+    // Pre-fill if already configured
+    if (config.isConfigured()) {
+      document.getElementById('cms-address').value = config.cmsAddress;
+      document.getElementById('cms-key').value = config.cmsKey;
+      document.getElementById('display-name').value = config.displayName;
+    }
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      persistLog('=== FORM SUBMIT EVENT FIRED ===');
+      persistLog('[Setup] preventDefault called');
+      errorEl.style.display = 'none';
+
+      const cmsAddress = document.getElementById('cms-address').value.trim().replace(/\/$/, '');
+      const cmsKey = document.getElementById('cms-key').value.trim();
+      const displayName = document.getElementById('display-name').value.trim();
+
+      persistLog('[Setup] Form values: ' + cmsAddress + ' / ' + displayName);
+
+      // Save config
+      persistLog('[Setup] Saving config...');
+      config.cmsAddress = cmsAddress;
+      config.cmsKey = cmsKey;
+      config.displayName = displayName;
+      persistLog('[Setup] Config saved!');
+
+      // Test connection
+      try {
+        const button = form.querySelector('button');
+        button.textContent = 'Connecting...';
+        button.disabled = true;
+
+        persistLog('[Setup] Creating XMDS client...');
+        const xmds = new XmdsClient(config);
+        persistLog('[Setup] Calling registerDisplay...');
+        const result = await xmds.registerDisplay();
+        persistLog('[Setup] Got result: ' + JSON.stringify(result));
+
+        if (result.code === 'READY') {
+          // Success!
+          window.location.href = './index.html';
+        } else {
+          // Not yet authorized
+          errorEl.textContent = `Display registered but not authorized yet. Please authorize "${displayName}" in your CMS, then refresh this page.`;
+          errorEl.style.display = 'block';
+        }
+
+        button.textContent = 'Connect';
+        button.disabled = false;
+      } catch (error) {
+        errorEl.textContent = `Connection failed: ${error.message}`;
+        errorEl.style.display = 'block';
+
+        const button = form.querySelector('button');
+        button.textContent = 'Connect';
+        button.disabled = false;
+      }
+    });
+
+    // Enable submit button now that JS is loaded
+    const submitBtn = document.getElementById('submit-btn');
+    submitBtn.disabled = false;
+    submitBtn.textContent = 'Connect';
+    console.log('[Setup] Submit button enabled - JavaScript ready!');
+  </script>
+</body>
+</html>

@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Xibo PWA Player (Lite)</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+      background: #000;
+      color: #fff;
+      overflow: hidden;
+    }
+
+    #player-container {
+      width: 100vw;
+      height: 100vh;
+      position: relative;
+      overflow: hidden;
+    }
+
+    #overlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      background: rgba(0, 0, 0, 0.7);
+      padding: 10px 20px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 12px;
+      z-index: 9999;
+      opacity: 0;
+      transition: opacity 0.3s;
+    }
+
+    #overlay.visible {
+      opacity: 1;
+    }
+
+    #config-info {
+      color: #4CAF50;
+    }
+
+    #status {
+      color: #fff;
+    }
+
+    .status-error {
+      color: #f44336 !important;
+    }
+
+    .status-info {
+      color: #2196F3 !important;
+    }
+
+    /* Hide overlay by default - show only on hover */
+    #overlay {
+      display: none;
+    }
+
+    body:hover #overlay {
+      display: flex;
+      opacity: 1;
+    }
+
+    /* Layout styles */
+    .xibo-layout {
+      width: 100%;
+      height: 100%;
+    }
+
+    .xibo-region {
+      position: absolute;
+      overflow: hidden;
+    }
+
+    .xibo-widget {
+      width: 100%;
+      height: 100%;
+    }
+  </style>
+</head>
+<body>
+  <!-- Status overlay -->
+  <div id="overlay">
+    <div id="config-info">Initializing...</div>
+    <div id="status">Loading player...</div>
+  </div>
+
+  <!-- Player rendering container -->
+  <div id="player-container"></div>
+
+  <!-- Check for configuration before loading player -->
+  <script>
+    // Check if player is configured
+    const params = new URLSearchParams(window.location.search);
+    const hasUrlConfig = params.has('cmsAddress') && params.has('cmsKey');
+    const hasStoredConfig = localStorage.getItem('xibo_config');
+
+    console.log('[Player] Has URL config:', hasUrlConfig);
+    console.log('[Player] Has stored config:', !!hasStoredConfig);
+
+    if (!hasUrlConfig && !hasStoredConfig) {
+      // Not configured, redirect to setup
+      console.log('[Player] Not configured, redirecting to setup...');
+      window.location.href = './setup.html';
+    } else {
+      console.log('[Player] Configuration found, loading player...');
+    }
+  </script>
+
+  <!-- Main player script -->
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>

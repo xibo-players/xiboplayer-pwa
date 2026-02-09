@@ -1,0 +1,24 @@
+{
+  "name": "@tecman/xibo-player-pwa",
+  "version": "1.0.0",
+  "description": "Lightweight PWA Xibo Player with RendererLite",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "type-check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "xml2js": "^0.6.2",
+    "nanoevents": "^9.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3",
+    "vite": "^5.4.11",
+    "@types/xml2js": "^0.4.14",
+    "@types/node": "^22.10.5"
+  },
+  "author": "TecMan",
+  "license": "Apache-2.0"
+}
