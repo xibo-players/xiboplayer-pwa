@@ -36,6 +36,7 @@ class PwaPlayer {
   private statsCollector: any = null;
   private displaySettings: any = null;
   private currentScheduleId: number = -1; // Track scheduleId for stats
+  private preparingLayoutId: number | null = null; // Guard against concurrent prepareAndRenderLayout calls
 
   async init() {
     log.info('Initializing player with RendererLite + PlayerCore...');
@@ -187,7 +188,7 @@ class PwaPlayer {
       // @ts-ignore
       const statsModule = await import('@xiboplayer/stats');
       // @ts-ignore
-      const displaySettingsModule = await import('@xiboplayer/display-settings');
+      const displaySettingsModule = await import('@xiboplayer/settings');
 
       cacheManager = cacheModule.cacheManager;
       scheduleManager = scheduleModule.scheduleManager;
@@ -316,12 +317,10 @@ class PwaPlayer {
     });
 
     // Handle check-pending-layout events
-    this.core.on('check-pending-layout', async (layoutId: number, requiredMedia: number[]) => {
-      const allReady = await this.checkAllMediaCached(requiredMedia);
-      if (allReady) {
-        console.log(`[PWA] Pending layout ${layoutId} is now ready, switching...`);
-        await this.prepareAndRenderLayout(layoutId);
-      }
+    // Re-run prepareAndRenderLayout which checks XLF + actual media IDs correctly
+    // (avoids the bug where setPendingLayout(id,[id]) treated layoutId as mediaId)
+    this.core.on('check-pending-layout', async (layoutId: number) => {
+      await this.prepareAndRenderLayout(layoutId);
     });
   }
 
@@ -382,6 +381,14 @@ class PwaPlayer {
       // Clear current layout to allow replay
       this.core.clearCurrentLayout();
 
+      // If a new layout is already pending download, don't re-collect
+      // (avoids redundant XMDS calls and duplicate download requests)
+      const pending = this.core.getPendingLayouts();
+      if (pending.length > 0) {
+        log.info(`Layout ${pending[0]} pending download, skipping collection`);
+        return;
+      }
+
       // Trigger schedule check to replay the layout (or switch to new one)
       log.info('Layout cycle completed, checking schedule...');
       this.core.collect().catch((error: any) => {
@@ -423,6 +430,20 @@ class PwaPlayer {
    * Prepare and render layout (Platform-specific logic)
    */
   private async prepareAndRenderLayout(layoutId: number) {
+    // Guard: skip if already playing this layout (another event already rendered it)
+    if (this.core.getCurrentLayoutId() === layoutId) {
+      log.info(`Layout ${layoutId} already playing, skipping duplicate prepare`);
+      return;
+    }
+
+    // Guard: prevent concurrent preparations of the same layout
+    // (e.g., two check-pending-layout events firing close together)
+    if (this.preparingLayoutId === layoutId) {
+      log.info(`Layout ${layoutId} preparation already in progress, skipping`);
+      return;
+    }
+
+    this.preparingLayoutId = layoutId;
     try {
       // Get XLF from cache
       const xlfBlob = await cacheManager.getCachedFile('layout', layoutId);
@@ -461,6 +482,8 @@ class PwaPlayer {
     } catch (error) {
       log.error('Failed to prepare layout:', layoutId, error);
       this.updateStatus(`Failed to load layout ${layoutId}`, 'error');
+    } finally {
+      this.preparingLayoutId = null;
     }
   }
 
@@ -547,39 +570,21 @@ class PwaPlayer {
 
   /**
    * Pre-fetch common widget dependencies (bundle.min.js, fonts.css)
+   * These are downloaded by the SW via signed URLs from RequiredFiles.
+   * Just check the SW's static cache — don't construct manual URLs.
    */
   private async prefetchWidgetDependencies() {
-    const dependencies = [
-      { type: 'P', itemId: '1', fileType: 'bundle', filename: 'bundle.min.js' },
-      { type: 'P', itemId: '1', fileType: 'fontCss', filename: 'fonts.css' }
-    ];
+    const filenames = ['bundle.min.js', 'fonts.css'];
 
-    const fetchPromises = dependencies.map(async (dep) => {
-      const cacheKey = `/cache/widget-dep/${dep.filename}`;
-      const cache = await caches.open('xibo-media-v1');
-      const cached = await cache.match(cacheKey);
-
+    const cache = await caches.open('xibo-static-v1');
+    for (const filename of filenames) {
+      const cached = await cache.match(`widget-resource:${filename}`);
       if (cached) {
-        console.log(`[PWA] Widget dependency ${dep.filename} already cached`);
-        return;
+        console.log(`[PWA] Widget dependency ${filename} already cached by SW`);
+      } else {
+        console.log(`[PWA] Widget dependency ${filename} not yet cached (will be fetched by SW on first use)`);
       }
-
-      try {
-        const url = `${cacheManager.rewriteUrl(this.xmds.config.cmsAddress)}/xmds.php?file=${dep.filename}&displayId=${this.xmds.displayId || 1}&type=${dep.type}&itemId=${dep.itemId}&fileType=${dep.fileType}`;
-
-        console.log(`[PWA] Pre-fetching widget dependency: ${dep.filename}`);
-        const response = await fetch(url);
-
-        if (response.ok) {
-          await cache.put(cacheKey, response.clone());
-          console.log(`[PWA] ✓ Cached widget dependency: ${dep.filename}`);
-        }
-      } catch (error) {
-        console.warn(`[PWA] Failed to pre-fetch ${dep.filename}:`, error);
-      }
-    });
-
-    await Promise.all(fetchPromises);
+    }
   }
 
   /**
