@@ -24,12 +24,18 @@ let config: any;
 let XmdsClient: any;
 let XmrWrapper: any;
 let cacheProxy: CacheProxy;
+let StatsCollector: any;
+let formatStats: any;
+let DisplaySettings: any;
 
 class PwaPlayer {
   private renderer!: RendererLite;
   private core!: PlayerCore;
   private xmds!: any;
   private downloadOverlay: DownloadOverlay | null = null;
+  private statsCollector: any = null;
+  private displaySettings: any = null;
+  private currentScheduleId: number = -1; // Track scheduleId for stats
 
   async init() {
     log.info('Initializing player with RendererLite + PlayerCore...');
@@ -137,7 +143,9 @@ class PwaPlayer {
       cache: cacheProxy,
       schedule: scheduleManager,
       renderer: this.renderer,
-      xmrWrapper: XmrWrapper
+      xmrWrapper: XmrWrapper,
+      statsCollector: this.statsCollector,
+      displaySettings: this.displaySettings
     });
 
     // Setup platform-specific event handlers
@@ -176,14 +184,30 @@ class PwaPlayer {
       const configModule = await import('@xiboplayer/utils');
       // @ts-ignore
       const xmrModule = await import('@xiboplayer/xmr');
+      // @ts-ignore
+      const statsModule = await import('@xiboplayer/stats');
+      // @ts-ignore
+      const displaySettingsModule = await import('@xiboplayer/display-settings');
 
       cacheManager = cacheModule.cacheManager;
       scheduleManager = scheduleModule.scheduleManager;
       config = configModule.config;
       XmdsClient = xmdsModule.XmdsClient;
       XmrWrapper = xmrModule.XmrWrapper;
+      StatsCollector = statsModule.StatsCollector;
+      formatStats = statsModule.formatStats;
+      DisplaySettings = displaySettingsModule.DisplaySettings;
 
       this.xmds = new XmdsClient(config);
+
+      // Initialize stats collector
+      this.statsCollector = new StatsCollector();
+      await this.statsCollector.init();
+      log.info('Stats collector initialized');
+
+      // Initialize display settings manager
+      this.displaySettings = new DisplaySettings();
+      log.info('Display settings manager initialized');
 
       log.info('Core modules loaded');
     } catch (error) {
@@ -202,7 +226,13 @@ class PwaPlayer {
     });
 
     this.core.on('register-complete', (regResult: any) => {
-      this.updateStatus(`Registered: ${regResult.displayName || config.hardwareKey}`);
+      const displayName = this.displaySettings?.getDisplayName() || regResult.displayName || config.hardwareKey;
+      this.updateStatus(`Registered: ${displayName}`);
+
+      // Update page title with display name
+      if (this.displaySettings) {
+        document.title = `Xibo Player - ${this.displaySettings.getDisplayName()}`;
+      }
     });
 
     this.core.on('files-received', (files: any[]) => {
@@ -220,8 +250,18 @@ class PwaPlayer {
       }
     });
 
-    this.core.on('schedule-received', () => {
+    this.core.on('schedule-received', (schedule: any) => {
       this.updateStatus('Processing schedule...');
+
+      // Extract scheduleId for stats tracking
+      // Check layouts or campaigns for scheduleId
+      if (schedule.layouts && schedule.layouts.length > 0) {
+        this.currentScheduleId = parseInt(schedule.layouts[0].scheduleid) || -1;
+      } else if (schedule.campaigns && schedule.campaigns.length > 0) {
+        this.currentScheduleId = parseInt(schedule.campaigns[0].scheduleid) || -1;
+      }
+
+      log.info('Current scheduleId for stats:', this.currentScheduleId);
     });
 
     this.core.on('layout-prepare-request', async (layoutId: number) => {
@@ -246,6 +286,24 @@ class PwaPlayer {
 
     this.core.on('xmr-connected', (url: string) => {
       log.info('XMR connected:', url);
+    });
+
+    // Display settings events
+    if (this.displaySettings) {
+      this.displaySettings.on('interval-changed', (newInterval: number) => {
+        log.info(`Collection interval changed to ${newInterval}s`);
+      });
+
+      this.displaySettings.on('settings-applied', (_settings: any, changes: string[]) => {
+        if (changes.length > 0) {
+          log.info('Settings updated from CMS:', changes.join(', '));
+        }
+      });
+    }
+
+    // Stats submission
+    this.core.on('submit-stats-request', async () => {
+      await this.submitStats();
     });
 
     // Listen for media downloads completing
@@ -292,17 +350,31 @@ class PwaPlayer {
    * Setup renderer event handlers
    */
   private setupRendererEventHandlers() {
-    this.renderer.on('layoutStart', (layoutId: number) => {
+    this.renderer.on('layoutStart', (layoutId: number, _layout: any) => {
       log.info('Layout started:', layoutId);
       this.updateStatus(`Playing layout ${layoutId}`);
       this.core.setCurrentLayout(layoutId);
 
       // Record play for max plays per hour tracking
       scheduleManager?.recordPlay(layoutId.toString());
+
+      // Track stats: start layout
+      if (this.statsCollector) {
+        this.statsCollector.startLayout(layoutId, this.currentScheduleId).catch((err: any) => {
+          log.error('Failed to start layout stat:', err);
+        });
+      }
     });
 
     this.renderer.on('layoutEnd', (layoutId: number) => {
       log.info('Layout ended:', layoutId);
+
+      // Track stats: end layout
+      if (this.statsCollector) {
+        this.statsCollector.endLayout(layoutId, this.currentScheduleId).catch((err: any) => {
+          log.error('Failed to end layout stat:', err);
+        });
+      }
 
       // Report to CMS
       this.core.notifyLayoutStatus(layoutId);
@@ -317,12 +389,28 @@ class PwaPlayer {
       });
     });
 
-    this.renderer.on('widgetStart', (widget: any) => {
-      log.info('Widget started:', widget.type, widget.widgetId);
+    this.renderer.on('widgetStart', (data: any) => {
+      const { widgetId, layoutId, mediaId } = data;
+      log.info('Widget started:', data.type, widgetId, 'media:', mediaId);
+
+      // Track stats: start widget/media
+      if (this.statsCollector && mediaId) {
+        this.statsCollector.startWidget(mediaId, layoutId, this.currentScheduleId).catch((err: any) => {
+          log.error('Failed to start widget stat:', err);
+        });
+      }
     });
 
-    this.renderer.on('widgetEnd', (widget: any) => {
-      log.info('Widget ended:', widget.type, widget.widgetId);
+    this.renderer.on('widgetEnd', (data: any) => {
+      const { widgetId, layoutId, mediaId } = data;
+      log.info('Widget ended:', data.type, widgetId, 'media:', mediaId);
+
+      // Track stats: end widget/media
+      if (this.statsCollector && mediaId) {
+        this.statsCollector.endWidget(mediaId, layoutId, this.currentScheduleId).catch((err: any) => {
+          log.error('Failed to end widget stat:', err);
+        });
+      }
     });
 
     this.renderer.on('error', (error: any) => {
@@ -576,6 +664,45 @@ class PwaPlayer {
     const configEl = document.getElementById('config-info');
     if (configEl) {
       configEl.textContent = `CMS: ${config.cmsAddress} | Display: ${config.displayName || config.hardwareKey} | Mode: Lite+Core`;
+    }
+  }
+
+  /**
+   * Submit proof of play stats to CMS
+   */
+  private async submitStats() {
+    if (!this.statsCollector) {
+      log.warn('Stats collector not initialized');
+      return;
+    }
+
+    try {
+      // Get stats ready for submission (up to 50 at a time)
+      const stats = await this.statsCollector.getStatsForSubmission(50);
+
+      if (stats.length === 0) {
+        log.info('No stats to submit');
+        return;
+      }
+
+      log.info(`Submitting ${stats.length} proof of play stats...`);
+
+      // Format stats as XML
+      const statsXml = formatStats(stats);
+
+      // Submit to CMS via XMDS
+      const success = await this.xmds.submitStats(statsXml);
+
+      if (success) {
+        log.info('Stats submitted successfully');
+        // Clear submitted stats from database
+        await this.statsCollector.clearSubmittedStats(stats);
+        log.info(`Cleared ${stats.length} submitted stats from database`);
+      } else {
+        log.warn('Stats submission failed (CMS returned false)');
+      }
+    } catch (error) {
+      log.error('Failed to submit stats:', error);
     }
   }
 

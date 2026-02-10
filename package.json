@@ -17,8 +17,11 @@
     "@xiboplayer/xmds": "file:../../packages/xmds",
     "@xiboplayer/xmr": "file:../../packages/xmr",
     "@xiboplayer/core": "file:../../packages/core",
+    "@xiboplayer/stats": "file:../../packages/stats",
+    "@xiboplayer/display-settings": "file:../../packages/display-settings",
     "xml2js": "^0.6.2",
-    "nanoevents": "^9.0.0"
+    "nanoevents": "^9.0.0",
+    "html2canvas": "^1.4.1"
   },
   "devDependencies": {
     "typescript": "^5.6.3",
