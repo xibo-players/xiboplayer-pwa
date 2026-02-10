@@ -296,6 +296,9 @@ class PwaPlayer {
       log.info('Layout started:', layoutId);
       this.updateStatus(`Playing layout ${layoutId}`);
       this.core.setCurrentLayout(layoutId);
+
+      // Record play for max plays per hour tracking
+      scheduleManager?.recordPlay(layoutId.toString());
     });
 
     this.renderer.on('layoutEnd', (layoutId: number) => {
