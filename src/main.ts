@@ -6,13 +6,13 @@
  */
 
 // @ts-ignore - JavaScript module
-import { RendererLite } from '@core/renderer-lite.js';
+import { RendererLite } from '@xiboplayer/renderer';
 // @ts-ignore - JavaScript module
-import { CacheProxy } from '@core/cache-proxy.js';
+import { CacheProxy } from '@xiboplayer/cache';
 // @ts-ignore - JavaScript module
-import { PlayerCore } from '@core/player-core.js';
+import { PlayerCore } from '@xiboplayer/core';
 // @ts-ignore - JavaScript module
-import { createLogger } from '@core/logger.js';
+import { createLogger } from '@xiboplayer/utils';
 import { DownloadOverlay, getDefaultOverlayConfig } from './download-overlay.js';
 
 const log = createLogger('PWA');
@@ -167,15 +167,15 @@ class PwaPlayer {
   private async loadCoreModules() {
     try {
       // @ts-ignore - JavaScript modules
-      const cacheModule = await import('@core/cache.js');
+      const cacheModule = await import('@xiboplayer/cache');
       // @ts-ignore
-      const xmdsModule = await import('@core/xmds.js');
+      const xmdsModule = await import('@xiboplayer/xmds');
       // @ts-ignore
-      const scheduleModule = await import('@core/schedule.js');
+      const scheduleModule = await import('@xiboplayer/schedule');
       // @ts-ignore
-      const configModule = await import('@core/config.js');
+      const configModule = await import('@xiboplayer/utils');
       // @ts-ignore
-      const xmrModule = await import('@core/xmr-wrapper.js');
+      const xmrModule = await import('@xiboplayer/xmr');
 
       cacheManager = cacheModule.cacheManager;
       scheduleManager = scheduleModule.scheduleManager;

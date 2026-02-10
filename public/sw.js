@@ -11,7 +11,7 @@
  * No HTTP 202 responses - always returns actual files or 404
  */
 
-import { DownloadManager } from '../../../packages/core/src/download-manager.js';
+import { DownloadManager } from '@xiboplayer/cache';
 import {
   formatBytes,
   parseRangeHeader,

@@ -26,11 +26,7 @@ export default defineConfig({
       },
     },
   },
-  resolve: {
-    alias: {
-      '@core': path.resolve(__dirname, '../../packages/core/src'),
-    },
-  },
+  // No more path aliases - using npm packages instead
   server: {
     port: 5174,
     proxy: {
