@@ -12,7 +12,7 @@ import { CacheProxy } from '@xiboplayer/cache';
 // @ts-ignore - JavaScript module
 import { PlayerCore } from '@xiboplayer/core';
 // @ts-ignore - JavaScript module
-import { createLogger, isDebug } from '@xiboplayer/utils';
+import { createLogger, isDebug, registerLogSink } from '@xiboplayer/utils';
 import { DownloadOverlay, getDefaultOverlayConfig } from './download-overlay.js';
 
 const log = createLogger('PWA');
@@ -26,6 +26,8 @@ let XmrWrapper: any;
 let cacheProxy: CacheProxy;
 let StatsCollector: any;
 let formatStats: any;
+let LogReporter: any;
+let formatLogs: any;
 let DisplaySettings: any;
 
 class PwaPlayer {
@@ -34,9 +36,12 @@ class PwaPlayer {
   private xmds!: any;
   private downloadOverlay: DownloadOverlay | null = null;
   private statsCollector: any = null;
+  private logReporter: any = null;
   private displaySettings: any = null;
   private currentScheduleId: number = -1; // Track scheduleId for stats
   private preparingLayoutId: number | null = null; // Guard against concurrent prepareAndRenderLayout calls
+  private _screenshotInterval: any = null;
+  private _wakeLock: any = null; // Screen Wake Lock sentinel
 
   async init() {
     log.info('Initializing player with RendererLite + PlayerCore...');
@@ -155,9 +160,25 @@ class PwaPlayer {
     this.setupCoreEventHandlers();
     this.setupRendererEventHandlers();
     this.setupServiceWorkerEventHandlers();
+    this.setupInteractiveControl();
 
     // Setup UI
     this.setupUI();
+
+    // Online/offline event listeners for seamless offline mode
+    window.addEventListener('online', () => {
+      console.log('[PWA] Browser reports online — triggering immediate collection');
+      this.updateStatus('Back online, syncing...');
+      this.removeOfflineIndicator();
+      this.core.collectNow().catch((error: any) => {
+        log.error('Failed to collect after coming online:', error);
+      });
+    });
+    window.addEventListener('offline', () => {
+      console.warn('[PWA] Browser reports offline — continuing playback with cached data');
+      this.updateStatus('Offline mode — using cached content');
+      this.showOfflineIndicator();
+    });
 
     // Initialize download progress overlay (configurable debug feature)
     const overlayConfig = getDefaultOverlayConfig();
@@ -166,10 +187,43 @@ class PwaPlayer {
       log.info('Download overlay enabled (hover bottom-right corner)');
     }
 
+    // Request Screen Wake Lock to prevent display sleep
+    await this.requestWakeLock();
+
+    // Re-acquire wake lock when tab becomes visible again
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') {
+        this.requestWakeLock();
+      }
+    });
+
     // Start collection cycle
     await this.core.collect();
 
     log.info('Player initialized successfully');
+  }
+
+  /**
+   * Request Screen Wake Lock to prevent display from sleeping
+   * Re-acquired on visibility change (browser releases it when tab is hidden)
+   */
+  private async requestWakeLock() {
+    if (!('wakeLock' in navigator)) {
+      log.debug('Wake Lock API not supported');
+      return;
+    }
+
+    try {
+      this._wakeLock = await (navigator as any).wakeLock.request('screen');
+      log.info('Screen Wake Lock acquired — display will stay on');
+
+      this._wakeLock.addEventListener('release', () => {
+        log.debug('Screen Wake Lock released');
+        this._wakeLock = null;
+      });
+    } catch (error: any) {
+      log.warn('Wake Lock request failed:', error?.message);
+    }
   }
 
   /**
@@ -199,6 +253,8 @@ class PwaPlayer {
       XmrWrapper = xmrModule.XmrWrapper;
       StatsCollector = statsModule.StatsCollector;
       formatStats = statsModule.formatStats;
+      LogReporter = statsModule.LogReporter;
+      formatLogs = statsModule.formatLogs;
       DisplaySettings = displaySettingsModule.DisplaySettings;
 
       this.xmds = new XmdsClient(config);
@@ -207,6 +263,18 @@ class PwaPlayer {
       this.statsCollector = new StatsCollector();
       await this.statsCollector.init();
       log.info('Stats collector initialized');
+
+      // Initialize log reporter for CMS log submission
+      this.logReporter = new LogReporter();
+      await this.logReporter.init();
+      log.info('Log reporter initialized');
+
+      // Bridge logger output to LogReporter for CMS submission
+      registerLogSink(({ level, name, args }: { level: string; name: string; args: any[] }) => {
+        if (!this.logReporter) return;
+        const message = args.map((a: any) => typeof a === 'string' ? a : JSON.stringify(a)).join(' ');
+        this.logReporter.log(level, `[${name}] ${message}`, 'PLAYER').catch(() => {});
+      });
 
       // Initialize display settings manager
       this.displaySettings = new DisplaySettings();
@@ -240,6 +308,25 @@ class PwaPlayer {
 
     this.core.on('files-received', (files: any[]) => {
       this.updateStatus(`Downloading ${files.length} files...`);
+    });
+
+    this.core.on('offline-mode', (isOffline: boolean) => {
+      if (isOffline) {
+        this.updateStatus('Offline mode — using cached content');
+        this.showOfflineIndicator();
+      } else {
+        this.updateStatus('Back online');
+        this.removeOfflineIndicator();
+      }
+    });
+
+    this.core.on('purge-request', async (purgeFiles: any[]) => {
+      try {
+        const result = await cacheProxy.deleteFiles(purgeFiles);
+        log.info(`Purge complete: ${result.deleted}/${result.total} files deleted`);
+      } catch (error) {
+        log.warn('Purge failed:', error);
+      }
     });
 
     this.core.on('download-request', async (files: any[]) => {
@@ -285,6 +372,12 @@ class PwaPlayer {
 
     this.core.on('collection-error', (error: any) => {
       this.updateStatus(`Collection error: ${error}`, 'error');
+
+      // Report fault to CMS (triggers dashboard alert)
+      this.logReporter?.reportFault(
+        'COLLECTION_FAILED',
+        `Collection cycle failed: ${error?.message || error}`
+      );
     });
 
     this.core.on('xmr-connected', (url: string) => {
@@ -306,6 +399,48 @@ class PwaPlayer {
       }
     });
 
+    // Overlay layout push from XMR
+    this.core.on('overlay-layout-request', async (layoutId: number) => {
+      log.info('Overlay layout requested:', layoutId);
+      // Re-use existing overlay rendering (schedule-driven overlays already work)
+      // Just need to prepare and render the overlay layout
+      await this.prepareAndRenderLayout(layoutId);
+    });
+
+    // Revert to schedule (undo XMR layout override)
+    this.core.on('revert-to-schedule', () => {
+      log.info('Reverting to scheduled content');
+      this.updateStatus('Reverting to schedule...');
+    });
+
+    // Purge all cache
+    this.core.on('purge-all-request', async () => {
+      log.info('Purging all cached content...');
+      this.updateStatus('Purging cache...');
+      try {
+        // Delete all caches
+        const cacheNames = await caches.keys();
+        await Promise.all(cacheNames.map(name => caches.delete(name)));
+        log.info(`Purged ${cacheNames.length} caches`);
+
+        // Re-initialize cache after purge
+        await cacheManager.init();
+      } catch (error) {
+        log.error('Cache purge failed:', error);
+      }
+    });
+
+    // Command execution result
+    this.core.on('command-result', (result: any) => {
+      log.info('Command result:', result);
+      if (!result.success) {
+        this.logReporter?.reportFault(
+          'COMMAND_FAILED',
+          `Command ${result.code} failed: ${result.reason || 'unknown'}`
+        );
+      }
+    });
+
     // Display settings events
     if (this.displaySettings) {
       this.displaySettings.on('interval-changed', (newInterval: number) => {
@@ -316,12 +451,26 @@ class PwaPlayer {
         if (changes.length > 0) {
           log.info('Settings updated from CMS:', changes.join(', '));
         }
+        // Start periodic screenshots once we have settings (only first time)
+        if (!this._screenshotInterval) {
+          this.startScreenshotInterval();
+        }
       });
     }
 
     // Stats submission
     this.core.on('submit-stats-request', async () => {
       await this.submitStats();
+    });
+
+    // Log submission to CMS
+    this.core.on('submit-logs-request', async () => {
+      await this.submitLogs();
+    });
+
+    // Screenshot capture (triggered by XMR or periodic interval)
+    this.core.on('screenshot-request', async () => {
+      await this.captureAndSubmitScreenshot();
     });
 
     // Listen for media downloads completing
@@ -339,6 +488,122 @@ class PwaPlayer {
     this.core.on('check-pending-layout', async (layoutId: number) => {
       await this.prepareAndRenderLayout(layoutId);
     });
+  }
+
+  /**
+   * Setup Interactive Control handler (receives messages from SW for widget IC requests)
+   * IC library in widget iframes makes XHR to /player/pwa/ic/*, SW forwards here.
+   */
+  private setupInteractiveControl() {
+    navigator.serviceWorker?.addEventListener('message', (event: any) => {
+      if (event.data?.type !== 'INTERACTIVE_CONTROL') return;
+
+      const { method, path, search, body } = event.data;
+      const port = event.ports?.[0];
+      if (!port) return;
+
+      const response = this.handleInteractiveControl(method, path, search, body);
+      port.postMessage(response);
+    });
+  }
+
+  /**
+   * Handle an Interactive Control request from a widget
+   */
+  private handleInteractiveControl(method: string, path: string, search: string, body: string | null): any {
+    log.debug('IC request:', method, path, search);
+
+    switch (path) {
+      case '/info':
+        return {
+          status: 200,
+          body: JSON.stringify({
+            hardwareKey: config.hardwareKey,
+            displayName: config.displayName,
+            playerType: 'pwa',
+            currentLayoutId: this.core.getCurrentLayoutId()
+          })
+        };
+
+      case '/trigger': {
+        let data: any = {};
+        try { data = body ? JSON.parse(body) : {}; } catch (_) {}
+        // Forward to renderer for layout-level actions (widget navigation)
+        this.renderer.emit('interactiveTrigger', {
+          targetId: data.id,
+          triggerCode: data.trigger
+        });
+        // Forward to core for schedule-level actions (layout navigation)
+        if (data.trigger) {
+          this.core.handleTrigger(data.trigger);
+        }
+        return { status: 200, body: 'OK' };
+      }
+
+      case '/duration/expire': {
+        let data: any = {};
+        try { data = body ? JSON.parse(body) : {}; } catch (_) {}
+        log.info('IC: Widget duration expire requested for', data.id);
+        this.renderer.emit('widgetExpire', { widgetId: data.id });
+        return { status: 200, body: 'OK' };
+      }
+
+      case '/duration/extend': {
+        let data: any = {};
+        try { data = body ? JSON.parse(body) : {}; } catch (_) {}
+        log.info('IC: Widget duration extend by', data.duration, 'for', data.id);
+        this.renderer.emit('widgetExtendDuration', {
+          widgetId: data.id,
+          duration: parseInt(data.duration)
+        });
+        return { status: 200, body: 'OK' };
+      }
+
+      case '/duration/set': {
+        let data: any = {};
+        try { data = body ? JSON.parse(body) : {}; } catch (_) {}
+        log.info('IC: Widget duration set to', data.duration, 'for', data.id);
+        this.renderer.emit('widgetSetDuration', {
+          widgetId: data.id,
+          duration: parseInt(data.duration)
+        });
+        return { status: 200, body: 'OK' };
+      }
+
+      case '/fault': {
+        let data: any = {};
+        try { data = body ? JSON.parse(body) : {}; } catch (_) {}
+        this.logReporter?.reportFault(
+          data.code || 'WIDGET_FAULT',
+          data.reason || 'Widget reported fault'
+        );
+        return { status: 200, body: 'OK' };
+      }
+
+      case '/realtime': {
+        const params = new URLSearchParams(search);
+        const dataKey = params.get('dataKey');
+        log.debug('IC: Realtime data request for key:', dataKey);
+
+        if (!dataKey) {
+          return { status: 400, body: JSON.stringify({ error: 'Missing dataKey parameter' }) };
+        }
+
+        const dcManager = this.core.getDataConnectorManager();
+        const connectorData = dcManager.getData(dataKey);
+
+        if (connectorData === null) {
+          return { status: 404, body: JSON.stringify({ error: `No data available for key: ${dataKey}` }) };
+        }
+
+        // Return data as JSON (stringify if it's an object, pass through if already a string)
+        const responseBody = typeof connectorData === 'string' ? connectorData : JSON.stringify(connectorData);
+        return { status: 200, body: responseBody };
+      }
+
+      default:
+        return { status: 404, body: JSON.stringify({ error: 'Unknown IC route' }) };
+    }
   }
 
   /**
@@ -397,22 +662,22 @@ class PwaPlayer {
       // Report to CMS
       this.core.notifyLayoutStatus(layoutId);
 
-      // Clear current layout to allow replay
+      // Clear current layout to allow replay/advance
       this.core.clearCurrentLayout();
 
-      // If a new layout is already pending download, don't re-collect
+      // If a new layout is already pending download, don't advance
       // (avoids redundant XMDS calls and duplicate download requests)
       const pending = this.core.getPendingLayouts();
       if (pending.length > 0) {
-        log.info(`Layout ${pending[0]} pending download, skipping collection`);
+        log.info(`Layout ${pending[0]} pending download, skipping advance`);
         return;
       }
 
-      // Trigger schedule check to replay the layout (or switch to new one)
-      log.info('Layout cycle completed, checking schedule...');
-      this.core.collect().catch((error: any) => {
-        log.error('Failed to check schedule:', error);
-      });
+      // Advance to the next layout in the schedule (round-robin cycling)
+      // This avoids a full collect() cycle — just picks the next layout and renders it.
+      // Periodic collect() cycles still run on the collection interval to sync with CMS.
+      log.info('Layout cycle completed, advancing to next layout...');
+      this.core.advanceToNextLayout();
     });
 
     this.renderer.on('widgetStart', (data: any) => {
@@ -442,6 +707,47 @@ class PwaPlayer {
     this.renderer.on('error', (error: any) => {
       log.error('Renderer error:', error);
       this.updateStatus(`Error: ${error.type}`, 'error');
+
+      // Report fault to CMS (triggers dashboard alert)
+      this.logReporter?.reportFault(
+        error.type || 'RENDERER_ERROR',
+        `Renderer error: ${error.message || error.type} (layout ${error.layoutId || 'unknown'})`
+      );
+    });
+
+    // Handle interactive actions from touch/click and keyboard triggers
+    this.renderer.on('action-trigger', (data: any) => {
+      const { actionType, triggerCode, layoutCode, targetId, commandCode } = data;
+      log.info('Action trigger:', actionType, data);
+
+      switch (actionType) {
+        case 'navLayout':
+        case 'navigateToLayout':
+          if (triggerCode) {
+            this.core.handleTrigger(triggerCode);
+          } else if (layoutCode) {
+            this.core.changeLayout(layoutCode);
+          }
+          break;
+
+        case 'navWidget':
+        case 'navigateToWidget':
+          if (triggerCode) {
+            this.core.handleTrigger(triggerCode);
+          } else if (targetId) {
+            this.renderer.navigateToWidget(targetId);
+          }
+          break;
+
+        case 'command':
+          if (commandCode) {
+            this.core.executeCommand(commandCode);
+          }
+          break;
+
+        default:
+          log.warn('Unknown action type:', actionType);
+      }
     });
   }
 
@@ -505,9 +811,15 @@ class PwaPlayer {
       await this.renderer.renderLayout(xlfXml, layoutId);
       this.updateStatus(`Playing layout ${layoutId}`);
 
-    } catch (error) {
+    } catch (error: any) {
       log.error('Failed to prepare layout:', layoutId, error);
       this.updateStatus(`Failed to load layout ${layoutId}`, 'error');
+
+      // Report fault to CMS (triggers dashboard alert)
+      this.logReporter?.reportFault(
+        'LAYOUT_LOAD_FAILED',
+        `Failed to prepare layout ${layoutId}: ${error?.message || error}`
+      );
     } finally {
       this.preparingLayoutId = null;
     }
@@ -529,6 +841,16 @@ class PwaPlayer {
         mediaIds.push(parseInt(fileId, 10));
       }
     });
+
+    // Include background image file ID from layout element
+    const layoutEl = doc.querySelector('layout');
+    const bgFileId = layoutEl?.getAttribute('background');
+    if (bgFileId) {
+      const parsed = parseInt(bgFileId, 10);
+      if (!isNaN(parsed) && !mediaIds.includes(parsed)) {
+        mediaIds.push(parsed);
+      }
+    }
 
     return mediaIds;
   }
@@ -709,7 +1031,11 @@ class PwaPlayer {
 
     try {
       // Get stats ready for submission (up to 50 at a time)
-      const stats = await this.statsCollector.getStatsForSubmission(50);
+      // Use aggregation level from CMS settings if available
+      const aggregationLevel = this.displaySettings?.getSetting('aggregationLevel') || 'Individual';
+      const stats = aggregationLevel === 'Aggregate'
+        ? await this.statsCollector.getAggregatedStatsForSubmission(50)
+        : await this.statsCollector.getStatsForSubmission(50);
 
       if (stats.length === 0) {
         log.debug('No stats to submit');
@@ -738,6 +1064,150 @@ class PwaPlayer {
   }
 
   /**
+   * Submit player logs to CMS for remote debugging
+   */
+  private async submitLogs() {
+    if (!this.logReporter) return;
+
+    try {
+      const logs = await this.logReporter.getLogsForSubmission(100);
+
+      if (logs.length === 0) {
+        log.debug('No logs to submit');
+        return;
+      }
+
+      log.info(`Submitting ${logs.length} logs to CMS...`);
+
+      const logXml = formatLogs(logs);
+      const success = await this.xmds.submitLog(logXml);
+
+      if (success) {
+        log.info('Logs submitted successfully');
+        await this.logReporter.clearSubmittedLogs(logs);
+      } else {
+        log.warn('Log submission failed (CMS returned false)');
+      }
+    } catch (error) {
+      log.error('Failed to submit logs:', error);
+    }
+  }
+
+  /**
+   * Capture screenshot using html2canvas and submit to CMS
+   */
+  private async captureAndSubmitScreenshot() {
+    try {
+      const html2canvas = (await import('html2canvas')).default;
+      const container = document.getElementById('player-container');
+      if (!container) {
+        log.warn('No player container for screenshot');
+        return;
+      }
+
+      const scale = 0.5;
+      const cw = container.clientWidth;
+      const ch = container.clientHeight;
+
+      // Create master canvas at scaled resolution
+      const master = document.createElement('canvas');
+      master.width = Math.round(cw * scale);
+      master.height = Math.round(ch * scale);
+      const ctx = master.getContext('2d')!;
+
+      // Fill with layout background colour
+      ctx.fillStyle = container.style.backgroundColor || '#000';
+      ctx.fillRect(0, 0, master.width, master.height);
+
+      // Draw background image if set
+      const bgUrl = container.style.backgroundImage?.match(/url\("?(.+?)"?\)/)?.[1];
+      if (bgUrl) {
+        try {
+          const img = new Image();
+          img.crossOrigin = 'anonymous';
+          await new Promise<void>((resolve, reject) => {
+            img.onload = () => resolve();
+            img.onerror = reject;
+            img.src = bgUrl;
+          });
+          ctx.drawImage(img, 0, 0, master.width, master.height);
+        } catch (_) { /* background image failed, continue */ }
+      }
+
+      // Capture each region's iframe content and composite onto master canvas
+      const regionEls = container.querySelectorAll('.renderer-lite-region');
+      for (const regionEl of regionEls) {
+        const rect = (regionEl as HTMLElement).getBoundingClientRect();
+        const containerRect = container.getBoundingClientRect();
+        const x = (rect.left - containerRect.left) * scale;
+        const y = (rect.top - containerRect.top) * scale;
+        const w = rect.width * scale;
+        const h = rect.height * scale;
+
+        // Find visible widget (iframe or media element) in this region
+        const iframes = regionEl.querySelectorAll('iframe');
+        for (const iframe of iframes) {
+          if ((iframe as HTMLElement).style.visibility === 'hidden') continue;
+          try {
+            // Same-origin iframes (SW-cached widget HTML) can be captured
+            const iframeDoc = (iframe as HTMLIFrameElement).contentDocument;
+            if (iframeDoc?.body) {
+              const iframeCanvas = await html2canvas(iframeDoc.body, {
+                scale, useCORS: true, allowTaint: true, logging: false,
+                width: rect.width, height: rect.height
+              });
+              ctx.drawImage(iframeCanvas, x, y, w, h);
+            }
+          } catch (_) {
+            // Cross-origin iframe — can't capture, leave as background
+          }
+        }
+
+        // Capture media elements (images, videos) directly
+        const images = regionEl.querySelectorAll('img');
+        for (const img of images) {
+          if ((img as HTMLElement).style.visibility === 'hidden') continue;
+          try {
+            ctx.drawImage(img as HTMLImageElement, x, y, w, h);
+          } catch (_) { /* tainted canvas, skip */ }
+        }
+
+        const videos = regionEl.querySelectorAll('video');
+        for (const video of videos) {
+          if ((video as HTMLElement).style.visibility === 'hidden') continue;
+          try {
+            ctx.drawImage(video as HTMLVideoElement, x, y, w, h);
+          } catch (_) { /* tainted canvas, skip */ }
+        }
+      }
+
+      const base64 = master.toDataURL('image/jpeg', 0.7).split(',')[1];
+      const success = await this.xmds.submitScreenShot(base64);
+      if (success) {
+        log.info('Screenshot submitted successfully');
+      } else {
+        log.warn('Screenshot submission failed');
+      }
+    } catch (error) {
+      log.error('Failed to capture screenshot:', error);
+    }
+  }
+
+  /**
+   * Start periodic screenshot submission
+   */
+  private startScreenshotInterval() {
+    const intervalSecs = this.displaySettings?.getSetting('screenshotInterval') || 0;
+    if (!intervalSecs || intervalSecs <= 0) return;
+
+    const intervalMs = intervalSecs * 1000;
+    log.info(`Starting periodic screenshots every ${intervalSecs}s`);
+    this._screenshotInterval = setInterval(() => {
+      this.captureAndSubmitScreenshot();
+    }, intervalMs);
+  }
+
+  /**
    * Update status message (Platform-specific UI)
    */
   private updateStatus(message: string, type: 'info' | 'error' = 'info') {
@@ -753,6 +1223,19 @@ class PwaPlayer {
     }
   }
 
+  private showOfflineIndicator() {
+    if (document.getElementById('offline-indicator')) return;
+    const el = document.createElement('div');
+    el.id = 'offline-indicator';
+    el.textContent = 'OFFLINE';
+    el.style.cssText = 'position:fixed;top:8px;right:8px;background:rgba(255,60,60,0.85);color:#fff;padding:4px 12px;border-radius:4px;font-size:12px;font-weight:bold;z-index:99999;pointer-events:none;';
+    document.body.appendChild(el);
+  }
+
+  private removeOfflineIndicator() {
+    document.getElementById('offline-indicator')?.remove();
+  }
+
   /**
    * Cleanup
    */
@@ -760,7 +1243,16 @@ class PwaPlayer {
     this.core.cleanup();
     this.renderer.cleanup();
 
-    // Cleanup download overlay if active
+    if (this._screenshotInterval) {
+      clearInterval(this._screenshotInterval);
+      this._screenshotInterval = null;
+    }
+
+    if (this._wakeLock) {
+      this._wakeLock.release();
+      this._wakeLock = null;
+    }
+
     if (this.downloadOverlay) {
       this.downloadOverlay.destroy();
     }

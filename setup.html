@@ -5,15 +5,12 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Xibo Player Setup</title>
   <style>
-    * {
-      margin: 0;
-      padding: 0;
-      box-sizing: border-box;
-    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
 
     body {
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      background: #1D1D1D;
+      color: #E0E0E0;
       min-height: 100vh;
       display: flex;
       align-items: center;
@@ -22,237 +19,522 @@
     }
 
     .container {
-      background: white;
-      border-radius: 12px;
-      box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
-      padding: 40px;
-      max-width: 500px;
+      background: #2A2A2A;
+      border-radius: 16px;
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+      padding: 48px;
+      max-width: 480px;
       width: 100%;
     }
 
-    h1 {
-      margin-bottom: 10px;
-      color: #333;
-      font-size: 28px;
+    .logo {
+      text-align: center;
+      margin-bottom: 32px;
     }
 
-    p {
-      color: #666;
-      margin-bottom: 30px;
-      line-height: 1.5;
+    .logo-text {
+      font-size: 36px;
+      font-weight: 700;
+      color: #fff;
+      letter-spacing: -0.5px;
     }
 
+    .logo-text span {
+      color: #0097D8;
+    }
+
+    .logo-sub {
+      font-size: 14px;
+      color: #888;
+      margin-top: 4px;
+    }
+
+    /* Phases */
+    .phase { display: none; }
+    .phase.active { display: block; }
+
+    /* Form styles */
     .form-group {
       margin-bottom: 20px;
     }
 
     label {
       display: block;
-      margin-bottom: 8px;
-      color: #333;
+      margin-bottom: 6px;
+      color: #AAA;
+      font-size: 13px;
       font-weight: 500;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
     }
 
     input {
       width: 100%;
-      padding: 12px;
-      border: 2px solid #e1e8ed;
-      border-radius: 6px;
-      font-size: 16px;
-      transition: border-color 0.3s;
+      padding: 12px 14px;
+      background: #1D1D1D;
+      border: 2px solid #3A3A3A;
+      border-radius: 8px;
+      font-size: 15px;
+      color: #E0E0E0;
+      transition: border-color 0.2s;
     }
 
     input:focus {
       outline: none;
-      border-color: #667eea;
+      border-color: #0097D8;
     }
+
+    input::placeholder { color: #555; }
 
     button {
       width: 100%;
       padding: 14px;
-      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      background: #0097D8;
       color: white;
       border: none;
-      border-radius: 6px;
-      font-size: 16px;
+      border-radius: 8px;
+      font-size: 15px;
       font-weight: 600;
       cursor: pointer;
-      transition: transform 0.2s, box-shadow 0.2s;
+      transition: background 0.2s, transform 0.1s;
     }
 
-    button:hover {
-      transform: translateY(-2px);
-      box-shadow: 0 5px 20px rgba(102, 126, 234, 0.4);
-    }
-
-    button:active {
-      transform: translateY(0);
-    }
-
-    .info {
-      margin-top: 20px;
-      padding: 15px;
-      background: #f8f9fa;
-      border-radius: 6px;
-      font-size: 14px;
+    button:hover { background: #0084BE; }
+    button:active { transform: scale(0.98); }
+    button:disabled {
+      background: #3A3A3A;
       color: #666;
+      cursor: not-allowed;
+      transform: none;
     }
 
-    .info code {
-      background: white;
-      padding: 2px 6px;
-      border-radius: 3px;
-      font-family: monospace;
-      color: #e83e8c;
-    }
-
-    .error {
-      margin-top: 15px;
-      padding: 12px;
-      background: #fee;
-      border: 1px solid #fcc;
-      border-radius: 6px;
-      color: #c33;
+    .error-msg {
+      margin-top: 16px;
+      padding: 12px 14px;
+      background: rgba(244, 67, 54, 0.15);
+      border: 1px solid rgba(244, 67, 54, 0.3);
+      border-radius: 8px;
+      color: #EF9A9A;
+      font-size: 14px;
       display: none;
+    }
+
+    /* Hardware key display */
+    .hw-key {
+      margin-top: 24px;
+      padding: 12px 14px;
+      background: #1D1D1D;
+      border-radius: 8px;
+      font-size: 12px;
+      color: #666;
+      text-align: center;
+    }
+
+    .hw-key code {
+      color: #0097D8;
+      font-family: 'SF Mono', 'Fira Code', monospace;
+      font-size: 13px;
+      user-select: all;
+    }
+
+    /* Waiting phase */
+    .waiting-card {
+      text-align: center;
+      padding: 16px 0;
+    }
+
+    .spinner {
+      width: 48px;
+      height: 48px;
+      border: 3px solid #3A3A3A;
+      border-top-color: #0097D8;
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+      margin: 0 auto 24px;
+    }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .waiting-title {
+      font-size: 20px;
+      font-weight: 600;
+      color: #fff;
+      margin-bottom: 12px;
+    }
+
+    .waiting-desc {
+      font-size: 14px;
+      color: #888;
+      line-height: 1.6;
+      margin-bottom: 24px;
+    }
+
+    .waiting-desc strong {
+      color: #E0E0E0;
+    }
+
+    .waiting-steps {
+      text-align: left;
+      padding: 16px 20px;
+      background: #1D1D1D;
+      border-radius: 8px;
+      margin-bottom: 24px;
+    }
+
+    .waiting-steps li {
+      list-style: none;
+      padding: 6px 0;
+      font-size: 14px;
+      color: #AAA;
+      position: relative;
+      padding-left: 24px;
+    }
+
+    .waiting-steps li::before {
+      content: '';
+      position: absolute;
+      left: 0;
+      top: 12px;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #3A3A3A;
+    }
+
+    .waiting-steps li.done::before {
+      background: #4CAF50;
+    }
+
+    .waiting-steps li.active::before {
+      background: #0097D8;
+      box-shadow: 0 0 8px rgba(0, 151, 216, 0.5);
+    }
+
+    .poll-status {
+      font-size: 12px;
+      color: #555;
+      margin-top: 12px;
+    }
+
+    .poll-status .countdown {
+      color: #0097D8;
+    }
+
+    .btn-secondary {
+      background: transparent;
+      border: 1px solid #3A3A3A;
+      color: #AAA;
+      margin-top: 8px;
+    }
+
+    .btn-secondary:hover { background: #333; }
+
+    /* Success flash */
+    .success-flash {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 151, 216, 0.15);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 100;
+    }
+
+    .success-flash.active {
+      display: flex;
+      animation: flashIn 0.5s ease-out;
+    }
+
+    .success-check {
+      width: 80px;
+      height: 80px;
+      border-radius: 50%;
+      background: #4CAF50;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 40px;
+      color: white;
+      animation: scaleIn 0.3s ease-out 0.1s both;
+    }
+
+    @keyframes flashIn { from { opacity: 0; } to { opacity: 1; } }
+    @keyframes scaleIn { from { transform: scale(0); } to { transform: scale(1); } }
+
+    /* Footer */
+    .footer {
+      margin-top: 24px;
+      text-align: center;
+      font-size: 12px;
+      color: #444;
     }
   </style>
 </head>
 <body>
   <div class="container">
-    <h1>Xibo Player Setup</h1>
-    <p>Configure your connection to the Xibo CMS.</p>
+    <div class="logo">
+      <div class="logo-text"><span>xibo</span> player</div>
+      <div class="logo-sub">PWA Digital Signage</div>
+    </div>
 
-    <form id="setup-form">
-      <div class="form-group">
-        <label for="cms-address">CMS Address</label>
-        <input
-          type="url"
-          id="cms-address"
-          placeholder="https://cms.example.com"
-          required
-        >
+    <!-- Phase 1: Configuration Form -->
+    <div id="phase-setup" class="phase active">
+      <form id="setup-form">
+        <div class="form-group">
+          <label for="cms-address">CMS Address</label>
+          <input type="url" id="cms-address" placeholder="https://cms.example.com" required>
+        </div>
+
+        <div class="form-group">
+          <label for="cms-key">CMS Key</label>
+          <input type="text" id="cms-key" placeholder="Your CMS secret key" required>
+        </div>
+
+        <div class="form-group">
+          <label for="display-name">Display Name</label>
+          <input type="text" id="display-name" placeholder="My Display" required>
+        </div>
+
+        <button type="submit" id="submit-btn" disabled>Loading...</button>
+      </form>
+
+      <div id="error" class="error-msg"></div>
+
+      <div class="hw-key">
+        Hardware Key: <code id="hw-key-display">...</code>
       </div>
+    </div>
 
-      <div class="form-group">
-        <label for="cms-key">CMS Key</label>
-        <input
-          type="text"
-          id="cms-key"
-          placeholder="Your CMS secret key"
-          required
-        >
+    <!-- Phase 2: Waiting for Authorization -->
+    <div id="phase-waiting" class="phase">
+      <div class="waiting-card">
+        <div class="spinner"></div>
+        <div class="waiting-title">Waiting for Authorization</div>
+        <div class="waiting-desc">
+          Display <strong id="waiting-display-name"></strong> has been registered.<br>
+          Authorize it in your CMS to start playback.
+        </div>
+
+        <ul class="waiting-steps">
+          <li class="done">Connected to CMS</li>
+          <li class="done">Display registered</li>
+          <li class="active">Awaiting authorization in CMS</li>
+          <li>Start playback</li>
+        </ul>
+
+        <div class="hw-key">
+          Hardware Key: <code id="hw-key-waiting">...</code>
+        </div>
+
+        <div class="poll-status">
+          Checking again in <span class="countdown" id="countdown">15</span>s...
+        </div>
+
+        <button id="btn-back" class="btn-secondary">Back to Settings</button>
       </div>
+    </div>
 
-      <div class="form-group">
-        <label for="display-name">Display Name</label>
-        <input
-          type="text"
-          id="display-name"
-          placeholder="My Display"
-          required
-        >
-      </div>
+    <div class="footer">
+      Xibo PWA Player v1.0
+    </div>
+  </div>
 
-      <button type="submit" id="submit-btn" disabled>Loading JavaScript...</button>
-    </form>
-
-    <div id="error" class="error"></div>
+  <!-- Success Flash Overlay -->
+  <div id="success-flash" class="success-flash">
+    <div class="success-check">&#10003;</div>
   </div>
 
   <script type="module">
-    // Persistent logging across reloads
-    function persistLog(msg) {
-      const logs = JSON.parse(sessionStorage.getItem('setupLogs') || '[]');
-      logs.push(`${new Date().toISOString()}: ${msg}`);
-      sessionStorage.setItem('setupLogs', JSON.stringify(logs));
-      console.log(msg);
-    }
-
-    // Show any previous logs
-    const prevLogs = sessionStorage.getItem('setupLogs');
-    if (prevLogs) {
-      console.log('=== PREVIOUS SESSION LOGS ===');
-      JSON.parse(prevLogs).forEach(log => console.log(log));
-      console.log('=== END PREVIOUS LOGS ===');
-    }
-
-    persistLog('[Setup] Script loading...');
-
     import { config } from '@xiboplayer/utils';
     import { XmdsClient } from '@xiboplayer/xmds';
 
-    persistLog('[Setup] Modules imported');
-
+    // ── Elements ──
     const form = document.getElementById('setup-form');
     const errorEl = document.getElementById('error');
+    const submitBtn = document.getElementById('submit-btn');
+    const phaseSetup = document.getElementById('phase-setup');
+    const phaseWaiting = document.getElementById('phase-waiting');
+    const countdownEl = document.getElementById('countdown');
+    const waitingNameEl = document.getElementById('waiting-display-name');
+    const btnBack = document.getElementById('btn-back');
+    const successFlash = document.getElementById('success-flash');
 
-    persistLog('[Setup] Form found: ' + (form ? 'YES' : 'NO'));
+    // Show hardware key
+    const hwKey = config.hardwareKey;
+    document.getElementById('hw-key-display').textContent = hwKey;
+    document.getElementById('hw-key-waiting').textContent = hwKey;
 
-    // Pre-fill if already configured
+    // ── State ──
+    let pollTimer = null;
+    let countdownTimer = null;
+    let pollSeconds = 15;
+
+    // ── Helpers ──
+    function showPhase(phase) {
+      phaseSetup.classList.remove('active');
+      phaseWaiting.classList.remove('active');
+      phase.classList.add('active');
+    }
+
+    function showError(msg) {
+      errorEl.textContent = msg;
+      errorEl.style.display = 'block';
+    }
+
+    function hideError() {
+      errorEl.style.display = 'none';
+    }
+
+    function startCountdown() {
+      let remaining = pollSeconds;
+      countdownEl.textContent = remaining;
+      clearInterval(countdownTimer);
+      countdownTimer = setInterval(() => {
+        remaining--;
+        countdownEl.textContent = Math.max(0, remaining);
+        if (remaining <= 0) clearInterval(countdownTimer);
+      }, 1000);
+    }
+
+    function showSuccess() {
+      successFlash.classList.add('active');
+      setTimeout(() => {
+        window.location.href = './index.html';
+      }, 800);
+    }
+
+    // ── Authorization Polling ──
+    async function checkAuthorization() {
+      try {
+        const xmds = new XmdsClient(config);
+        const result = await xmds.registerDisplay();
+        console.log('[Setup] Poll result:', result.code, result.message);
+
+        if (result.code === 'READY') {
+          // Authorized!
+          clearInterval(pollTimer);
+          clearInterval(countdownTimer);
+          showSuccess();
+          return;
+        }
+
+        // Still waiting — restart countdown
+        startCountdown();
+      } catch (error) {
+        console.warn('[Setup] Poll failed:', error.message);
+        startCountdown();
+      }
+    }
+
+    function startPolling(displayName) {
+      waitingNameEl.textContent = displayName;
+      showPhase(phaseWaiting);
+      startCountdown();
+      pollTimer = setInterval(checkAuthorization, pollSeconds * 1000);
+    }
+
+    function stopPolling() {
+      clearInterval(pollTimer);
+      clearInterval(countdownTimer);
+      pollTimer = null;
+    }
+
+    // ── Pre-fill if already configured ──
     if (config.isConfigured()) {
       document.getElementById('cms-address').value = config.cmsAddress;
       document.getElementById('cms-key').value = config.cmsKey;
       document.getElementById('display-name').value = config.displayName;
     }
 
+    // ── Form Submit ──
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
-      e.stopPropagation();
-      persistLog('=== FORM SUBMIT EVENT FIRED ===');
-      persistLog('[Setup] preventDefault called');
-      errorEl.style.display = 'none';
+      hideError();
 
       const cmsAddress = document.getElementById('cms-address').value.trim().replace(/\/$/, '');
       const cmsKey = document.getElementById('cms-key').value.trim();
       const displayName = document.getElementById('display-name').value.trim();
 
-      persistLog('[Setup] Form values: ' + cmsAddress + ' / ' + displayName);
-
       // Save config
-      persistLog('[Setup] Saving config...');
       config.cmsAddress = cmsAddress;
       config.cmsKey = cmsKey;
       config.displayName = displayName;
-      persistLog('[Setup] Config saved!');
+
+      // Also backup hardware key to IndexedDB for stability
+      backupHardwareKey(config.hardwareKey);
 
       // Test connection
       try {
-        const button = form.querySelector('button');
-        button.textContent = 'Connecting...';
-        button.disabled = true;
+        submitBtn.textContent = 'Connecting...';
+        submitBtn.disabled = true;
 
-        persistLog('[Setup] Creating XMDS client...');
         const xmds = new XmdsClient(config);
-        persistLog('[Setup] Calling registerDisplay...');
         const result = await xmds.registerDisplay();
-        persistLog('[Setup] Got result: ' + JSON.stringify(result));
 
         if (result.code === 'READY') {
-          // Success!
-          window.location.href = './index.html';
+          showSuccess();
         } else {
-          // Not yet authorized
-          errorEl.textContent = `Display registered but not authorized yet. Please authorize "${displayName}" in your CMS, then refresh this page.`;
-          errorEl.style.display = 'block';
+          // Not authorized yet — switch to polling phase
+          startPolling(displayName);
         }
-
-        button.textContent = 'Connect';
-        button.disabled = false;
       } catch (error) {
-        errorEl.textContent = `Connection failed: ${error.message}`;
-        errorEl.style.display = 'block';
-
-        const button = form.querySelector('button');
-        button.textContent = 'Connect';
-        button.disabled = false;
+        showError(`Connection failed: ${error.message}`);
+        submitBtn.textContent = 'Connect';
+        submitBtn.disabled = false;
       }
     });
 
-    // Enable submit button now that JS is loaded
-    const submitBtn = document.getElementById('submit-btn');
+    // ── Back button ──
+    btnBack.addEventListener('click', () => {
+      stopPolling();
+      showPhase(phaseSetup);
+      submitBtn.textContent = 'Connect';
+      submitBtn.disabled = false;
+    });
+
+    // ── IndexedDB hardware key backup ──
+    async function backupHardwareKey(key) {
+      try {
+        const req = indexedDB.open('xibo-hw-backup', 1);
+        req.onupgradeneeded = () => {
+          const db = req.result;
+          if (!db.objectStoreNames.contains('keys')) {
+            db.createObjectStore('keys');
+          }
+        };
+        req.onsuccess = () => {
+          const db = req.result;
+          const tx = db.transaction('keys', 'readwrite');
+          tx.objectStore('keys').put(key, 'hardwareKey');
+          tx.oncomplete = () => db.close();
+        };
+      } catch (e) {
+        console.warn('[Setup] IndexedDB backup failed:', e);
+      }
+    }
+
+    // ── Enable submit ──
     submitBtn.disabled = false;
     submitBtn.textContent = 'Connect';
-    console.log('[Setup] Submit button enabled - JavaScript ready!');
+
+    // ── Auto-resume polling if already registered but not authorized ──
+    if (config.isConfigured()) {
+      (async () => {
+        try {
+          const xmds = new XmdsClient(config);
+          const result = await xmds.registerDisplay();
+          if (result.code === 'READY') {
+            window.location.href = './index.html';
+          } else {
+            // Not authorized — go straight to polling
+            startPolling(config.displayName);
+          }
+        } catch (e) {
+          // Connection failed, show form
+          console.log('[Setup] Auto-check failed, showing form');
+        }
+      })();
+    }
   </script>
 </body>
 </html>
