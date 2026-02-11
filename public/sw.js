@@ -1011,6 +1011,9 @@ class MessageHandler {
       case 'DOWNLOAD_FILES':
         return await this.handleDownloadFiles(data.files);
 
+      case 'PRIORITIZE_DOWNLOAD':
+        return this.handlePrioritizeDownload(data.fileType, data.fileId);
+
       case 'CLEAR_CACHE':
         return await this.handleClearCache();
 
@@ -1027,8 +1030,28 @@ class MessageHandler {
    * Handle DOWNLOAD_FILES message
    * Enqueue all files for download and wait for them to START
    */
+  /**
+   * Handle PRIORITIZE_DOWNLOAD - move file to front of download queue
+   */
+  handlePrioritizeDownload(fileType, fileId) {
+    this.log.info('Prioritize request:', `${fileType}/${fileId}`);
+    const found = this.downloadManager.queue.prioritize(fileType, fileId);
+    // Trigger queue processing in case there's capacity
+    this.downloadManager.queue.processQueue();
+    return { success: true, found };
+  }
+
   async handleDownloadFiles(files) {
     this.log.info('Enqueueing', files.length, 'files for download');
+
+    // Sort: layout XLFs first (tiny, needed to parse media deps), then ascending by size.
+    // This ensures the active layout XLF caches instantly, and smaller media
+    // files don't get stuck behind large videos in the download queue.
+    files.sort((a, b) => {
+      if (a.type === 'layout' && b.type !== 'layout') return -1;
+      if (a.type !== 'layout' && b.type === 'layout') return 1;
+      return (parseInt(a.size) || 0) - (parseInt(b.size) || 0);
+    });
 
     let enqueuedCount = 0;
     const enqueuedTasks = [];
