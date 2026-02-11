@@ -57,7 +57,7 @@ class SWLogger {
 
 const log = new SWLogger('SW');
 
-const SW_VERSION = '2026-02-11-chunk-race-fix';
+const SW_VERSION = '2026-02-12-static-resource-cache';
 const CACHE_NAME = 'xibo-media-v1';
 const STATIC_CACHE = 'xibo-static-v1';
 
@@ -714,7 +714,7 @@ class RequestHandler {
           return this.handleHeadWhole(route.data.cached?.headers.get('Content-Length'));
 
         case 'head-chunked':
-          return this.handleHeadChunked(route.data.metadata);
+          return this.handleHeadChunked(route.data.metadata, route.data.cacheKey);
 
         case 'range-whole':
           return this.handleRangeRequest(route.data.cached, route.data.rangeHeader, route.data.cacheKey);
@@ -795,9 +795,17 @@ class RequestHandler {
   }
 
   /**
-   * Handle HEAD request for chunked file
+   * Handle HEAD request for chunked file.
+   * Only reports 200 if chunk 0 is actually in cache (not just metadata).
+   * Metadata-only means the progressive download has started but no data
+   * is servable yet — the client should treat this as "not ready".
    */
-  handleHeadChunked(metadata) {
+  async handleHeadChunked(metadata, cacheKey) {
+    const chunk0 = await this.cacheManager.getChunk(cacheKey, 0);
+    if (!chunk0) {
+      log.info('HEAD response: Chunked file not yet playable (chunk 0 missing):', cacheKey);
+      return new Response(null, { status: 404 });
+    }
     log.info('HEAD response: File exists (chunked)');
     return new Response(null, {
       status: 200,
@@ -916,12 +924,15 @@ class RequestHandler {
 
       const chunkBlob = await this.blobCache.get(chunkKey, async () => {
         let chunkResponse = null;
-        for (let retry = 0; retry < 20; retry++) {
+        for (let retry = 0; retry < 120; retry++) {
           chunkResponse = await this.cacheManager.getChunk(cacheKey, i);
           if (chunkResponse) break;
-          // Chunk not yet stored — background putChunked() still running
-          log.info(`Chunk ${i}/${numChunks} not yet available for ${cacheKey}, waiting... (attempt ${retry + 1})`);
-          await new Promise(resolve => setTimeout(resolve, 250));
+          // Chunk not yet stored — progressive download still running.
+          // 120 × 500ms = 60s max wait per chunk (50MB @ ~1MB/s worst case).
+          if (retry % 10 === 0) {
+            log.info(`Chunk ${i}/${numChunks} not yet available for ${cacheKey}, waiting... (attempt ${retry + 1})`);
+          }
+          await new Promise(resolve => setTimeout(resolve, 500));
         }
         if (!chunkResponse) {
           throw new Error(`Chunk ${i} not found for ${cacheKey} after retries`);
@@ -1020,10 +1031,37 @@ class MessageHandler {
       case 'GET_DOWNLOAD_PROGRESS':
         return await this.handleGetProgress();
 
+      case 'DELETE_FILES':
+        return await this.handleDeleteFiles(data.files);
+
       default:
         this.log.warn('Unknown message type:', type);
         return { success: false, error: 'Unknown message type' };
     }
+  }
+
+  /**
+   * Handle DELETE_FILES message - purge obsolete files from cache
+   */
+  async handleDeleteFiles(files) {
+    if (!files || !Array.isArray(files)) {
+      return { success: false, error: 'No files provided' };
+    }
+
+    let deleted = 0;
+    for (const file of files) {
+      const cacheKey = `/player/pwa/cache/${file.type}/${file.id}`;
+      const wasDeleted = await this.cacheManager.delete(cacheKey);
+      if (wasDeleted) {
+        this.log.info('Purged:', cacheKey);
+        deleted++;
+      } else {
+        this.log.debug('Not cached (skip purge):', cacheKey);
+      }
+    }
+
+    this.log.info(`Purge complete: ${deleted}/${files.length} files deleted`);
+    return { success: true, deleted, total: files.length };
   }
 
   /**
@@ -1044,13 +1082,14 @@ class MessageHandler {
   async handleDownloadFiles(files) {
     this.log.info('Enqueueing', files.length, 'files for download');
 
-    // Sort: layout XLFs first (tiny, needed to parse media deps), then ascending by size.
-    // This ensures the active layout XLF caches instantly, and smaller media
-    // files don't get stuck behind large videos in the download queue.
+    // Move layout XLFs to front (tiny, needed to parse media deps).
+    // Otherwise preserve client ordering — PlayerCore.prioritizeFilesByLayout()
+    // already tiers files: current-layout XLFs → other XLFs → resources → media.
+    // Re-sorting by size here would defeat layout-aware prioritisation.
     files.sort((a, b) => {
       if (a.type === 'layout' && b.type !== 'layout') return -1;
       if (a.type !== 'layout' && b.type === 'layout') return 1;
-      return (parseInt(a.size) || 0) - (parseInt(b.size) || 0);
+      return 0; // preserve client ordering for non-layout files
     });
 
     let enqueuedCount = 0;
@@ -1110,118 +1149,227 @@ class MessageHandler {
   }
 
   /**
-   * Cache file after download completes
-   * This wraps the DownloadTask to add caching behavior
+   * Cache file after download completes.
+   * For large files (> CHUNK_STORAGE_THRESHOLD): uses PROGRESSIVE caching —
+   *   each chunk is stored to cache as soon as it downloads from the CMS,
+   *   metadata is written after the HEAD request, and the client is notified
+   *   after the first chunk so video playback can start immediately.
+   * For small files: traditional whole-file caching.
    */
   async cacheFileAfterDownload(task, fileInfo) {
     try {
-      const blob = await task.wait();
-
-      // Cache the downloaded file
       const cacheKey = `/player/pwa/cache/${fileInfo.type}/${fileInfo.id}`;
       const contentType = fileInfo.type === 'layout' ? 'text/xml' :
                           fileInfo.type === 'widget' ? 'text/html' :
                           'application/octet-stream';
 
-      // Use chunked storage for large files (low memory streaming)
-      if (blob.size > CHUNK_STORAGE_THRESHOLD) {
-        log.info('Large file detected, using chunked storage:', cacheKey, `(${(blob.size / 1024 / 1024).toFixed(1)} MB)`);
-
-        // Store metadata first, then notify immediately!
-        // This allows layout to switch while chunks are being stored
-        const numChunks = Math.ceil(blob.size / CHUNK_SIZE);
-        const metadata = {
-          totalSize: blob.size,
-          chunkSize: CHUNK_SIZE,
-          numChunks,
-          contentType,
-          chunked: true,
-          createdAt: Date.now()
-        };
-
-        // Store metadata first
-        const metadataResponse = new Response(JSON.stringify(metadata), {
-          headers: { 'Content-Type': 'application/json' }
-        });
-        const cache = await caches.open(CACHE_NAME);
-        await cache.put(`${cacheKey}/metadata`, metadataResponse);
-
-        // Notify clients immediately - file is now "ready" for streaming!
-        const clients = await self.clients.matchAll();
-        clients.forEach(client => {
-          client.postMessage({
-            type: 'FILE_CACHED',
-            fileId: fileInfo.id,
-            fileType: fileInfo.type,
-            size: blob.size
-          });
-        });
-        log.info('File ready for streaming, storing chunks in background:', cacheKey);
-
-        // Store chunks in background but track for race-condition safety
-        // handleChunkedRangeRequest() will await this if chunks aren't ready yet
-        const storagePromise = this.cacheManager.putChunked(cacheKey, blob, contentType)
-          .then(() => pendingChunkStorage.delete(cacheKey))
-          .catch(err => {
-            this.log.error('Background chunk storage failed:', cacheKey, err);
-            pendingChunkStorage.delete(cacheKey);
-          });
-        pendingChunkStorage.set(cacheKey, storagePromise);
-
-      } else {
-        await this.cacheManager.put(cacheKey, blob, contentType);
-        log.info('Cached after download:', cacheKey, `(${blob.size} bytes)`);
-
-        // Notify all clients that file is cached
-        const clients = await self.clients.matchAll();
-        clients.forEach(client => {
-          client.postMessage({
-            type: 'FILE_CACHED',
-            fileId: fileInfo.id,
-            fileType: fileInfo.type,
-            size: blob.size
-          });
-        });
+      // Large files: progressive chunk caching (stream while downloading)
+      const fileSize = parseInt(fileInfo.size) || 0;
+      if (fileSize > CHUNK_STORAGE_THRESHOLD) {
+        return await this._progressiveCacheFile(task, fileInfo, cacheKey, contentType, fileSize);
       }
+
+      // Small files: wait for full download, then cache whole file
+      const blob = await task.wait();
+
+      await this.cacheManager.put(cacheKey, blob, contentType);
+      log.info('Cached after download:', cacheKey, `(${blob.size} bytes)`);
+
+      // Notify all clients that file is cached
+      const clients = await self.clients.matchAll();
+      clients.forEach(client => {
+        client.postMessage({
+          type: 'FILE_CACHED',
+          fileId: fileInfo.id,
+          fileType: fileInfo.type,
+          size: blob.size
+        });
+      });
 
       // Also cache widget resources (.js, .css, fonts) for static serving
-      // This allows rewritten URLs (/player/pwa/cache/static/bundle.min.js) to resolve instantly
-      const filename = fileInfo.path ? (() => {
-        try { return new URL(fileInfo.path).searchParams.get('file'); } catch { return null; }
-      })() : null;
-
-      if (filename && (filename.endsWith('.js') || filename.endsWith('.css') ||
-          /\.(otf|ttf|woff2?|eot|svg)$/i.test(filename))) {
-        const staticCache = await caches.open(STATIC_CACHE);
-        const staticKey = `/player/pwa/cache/static/${filename}`;
-
-        // Determine correct content type for the resource
-        const ext = filename.split('.').pop().toLowerCase();
-        const staticContentType = {
-          'js': 'application/javascript',
-          'css': 'text/css',
-          'otf': 'font/otf',
-          'ttf': 'font/ttf',
-          'woff': 'font/woff',
-          'woff2': 'font/woff2',
-          'eot': 'application/vnd.ms-fontobject',
-          'svg': 'image/svg+xml'
-        }[ext] || 'application/octet-stream';
-
-        await Promise.all([
-          staticCache.put(staticKey, new Response(blob.slice(0, blob.size, blob.type), {
-            headers: { 'Content-Type': staticContentType }
-          })),
-          this.cacheManager.put(staticKey, blob.slice(0, blob.size, blob.type), staticContentType)
-        ]);
-
-        log.info('Also cached as static resource:', filename, `(${staticContentType})`);
-      }
+      this._cacheStaticResource(fileInfo, blob);
 
       return blob;
     } catch (error) {
       this.log.error('Failed to cache after download:', fileInfo.id, error);
       throw error;
+    }
+  }
+
+  /**
+   * Progressive chunk caching: store each chunk to cache as it downloads.
+   * Video can start playing after first chunk + metadata are stored.
+   */
+  async _progressiveCacheFile(task, fileInfo, cacheKey, contentType, fileSize) {
+    const cache = await caches.open(CACHE_NAME);
+    let metadataStored = false;
+    let chunksStored = 0;
+    let clientNotified = false;
+
+    // Compute expected chunk count from declared file size
+    const expectedChunks = Math.ceil(fileSize / CHUNK_SIZE);
+    log.info(`Progressive download: ${cacheKey} (${formatBytes(fileSize)}, ~${expectedChunks} chunks)`);
+
+    // Store metadata NOW based on declared file size so Range requests can
+    // start working as soon as the first chunk lands in cache
+    const metadata = {
+      totalSize: fileSize,
+      chunkSize: CHUNK_SIZE,
+      numChunks: expectedChunks,
+      contentType,
+      chunked: true,
+      createdAt: Date.now()
+    };
+
+    await cache.put(`${cacheKey}/metadata`, new Response(
+      JSON.stringify(metadata),
+      { headers: { 'Content-Type': 'application/json' } }
+    ));
+    metadataStored = true;
+    log.info('Metadata stored, ready for progressive streaming:', cacheKey);
+
+    // Hook into DownloadTask's chunk-by-chunk download.
+    // Each chunk gets stored to Cache API the moment it arrives from the CMS,
+    // so handleChunkedRangeRequest() can serve it immediately.
+    task.onChunkDownloaded = async (chunkIndex, chunkBlob, totalChunks) => {
+      // Store chunk to cache immediately
+      const chunkResponse = new Response(chunkBlob, {
+        headers: {
+          'Content-Type': contentType,
+          'Content-Length': chunkBlob.size,
+          'X-Chunk-Index': chunkIndex,
+          'X-Total-Chunks': totalChunks
+        }
+      });
+      await cache.put(`${cacheKey}/chunk-${chunkIndex}`, chunkResponse);
+      chunksStored++;
+
+      if (chunksStored % 2 === 0 || chunksStored === totalChunks) {
+        log.info(`Progressive: chunk ${chunksStored}/${totalChunks} cached for ${fileInfo.id}`);
+      }
+
+      // Notify client when chunk 0 is cached — video needs byte 0 to start streaming.
+      // With parallel chunk downloads, chunk 0 may not be the first to arrive.
+      if (!clientNotified && chunkIndex === 0) {
+        clientNotified = true;
+        const clients = await self.clients.matchAll();
+        clients.forEach(client => {
+          client.postMessage({
+            type: 'FILE_CACHED',
+            fileId: fileInfo.id,
+            fileType: fileInfo.type,
+            size: fileSize,
+            progressive: true,
+            chunksReady: chunksStored,
+            totalChunks
+          });
+        });
+        log.info('First chunk cached — client notified, streaming can begin:', cacheKey);
+      }
+
+      // Update metadata with actual chunk count if it differs (edge case)
+      if (totalChunks !== expectedChunks && !metadataStored) {
+        metadata.numChunks = totalChunks;
+        await cache.put(`${cacheKey}/metadata`, new Response(
+          JSON.stringify(metadata),
+          { headers: { 'Content-Type': 'application/json' } }
+        ));
+      }
+    };
+
+    // Wait for DownloadTask to finish (all chunks downloaded + callbacks fired).
+    // When onChunkDownloaded was used, task.wait() returns an empty Blob
+    // (data is already stored to cache chunk by chunk).
+    // When downloadFull was used instead (actual size < 100MB), returns the full Blob.
+    const downloadedBlob = await task.wait();
+
+    // If the callback never fired (actual file smaller than DownloadTask's chunk
+    // threshold of 100MB), use the already-downloaded blob instead of re-fetching.
+    if (chunksStored === 0) {
+      log.warn('Progressive callback never fired, falling back to putChunked:', cacheKey);
+
+      if (downloadedBlob.size > 0) {
+        // Full blob available from downloadFull path — cache it
+        await this.cacheManager.putChunked(cacheKey, downloadedBlob, contentType);
+      } else {
+        // Truly empty — should never happen, but cache whole file as safety net
+        await this.cacheManager.put(cacheKey, downloadedBlob, contentType);
+      }
+
+      // Notify client
+      const clients = await self.clients.matchAll();
+      clients.forEach(client => {
+        client.postMessage({
+          type: 'FILE_CACHED',
+          fileId: fileInfo.id,
+          fileType: fileInfo.type,
+          size: downloadedBlob.size || fileSize
+        });
+      });
+      return downloadedBlob;
+    }
+
+    log.info(`Progressive download complete: ${cacheKey} (${chunksStored} chunks stored)`);
+
+    // Notify client with final complete state
+    const clients = await self.clients.matchAll();
+    clients.forEach(client => {
+      client.postMessage({
+        type: 'FILE_CACHED',
+        fileId: fileInfo.id,
+        fileType: fileInfo.type,
+        size: fileSize,
+        complete: true
+      });
+    });
+
+    // Remove from pending storage tracker (all chunks are already stored)
+    pendingChunkStorage.delete(cacheKey);
+
+    return new Blob([], { type: contentType }); // Data is in cache, not in memory
+  }
+
+  /**
+   * Cache widget static resources (.js, .css, fonts) alongside the media cache
+   */
+  _cacheStaticResource(fileInfo, blob) {
+    const filename = fileInfo.path ? (() => {
+      try { return new URL(fileInfo.path).searchParams.get('file'); } catch { return null; }
+    })() : null;
+
+    if (filename && (filename.endsWith('.js') || filename.endsWith('.css') ||
+        /\.(otf|ttf|woff2?|eot|svg)$/i.test(filename))) {
+
+      // Fire-and-forget — don't block the main cache flow
+      (async () => {
+        try {
+          const staticCache = await caches.open(STATIC_CACHE);
+          const staticKey = `/player/pwa/cache/static/${filename}`;
+
+          const ext = filename.split('.').pop().toLowerCase();
+          const staticContentType = {
+            'js': 'application/javascript',
+            'css': 'text/css',
+            'otf': 'font/otf',
+            'ttf': 'font/ttf',
+            'woff': 'font/woff',
+            'woff2': 'font/woff2',
+            'eot': 'application/vnd.ms-fontobject',
+            'svg': 'image/svg+xml'
+          }[ext] || 'application/octet-stream';
+
+          await Promise.all([
+            staticCache.put(staticKey, new Response(blob.slice(0, blob.size, blob.type), {
+              headers: { 'Content-Type': staticContentType }
+            })),
+            this.cacheManager.put(staticKey, blob.slice(0, blob.size, blob.type), staticContentType)
+          ]);
+
+          log.info('Also cached as static resource:', filename, `(${staticContentType})`);
+        } catch (e) {
+          log.warn('Failed to cache static resource:', filename, e);
+        }
+      })();
     }
   }
 
@@ -1356,6 +1504,71 @@ self.addEventListener('activate', (event) => {
   );
 });
 
+/**
+ * Handle Interactive Control requests from widget iframes.
+ * Forwards to main thread via MessageChannel and returns the response.
+ * IC library in widgets uses XHR to /player/pwa/ic/{route}.
+ */
+async function handleInteractiveControl(event) {
+  const url = new URL(event.request.url);
+  const icPath = url.pathname.replace('/player/pwa/ic', '');
+  const method = event.request.method;
+
+  log.info('Interactive Control request:', method, icPath);
+
+  let body = null;
+  if (method === 'POST' || method === 'PUT') {
+    try {
+      body = await event.request.text();
+    } catch (_) {}
+  }
+
+  // Forward to main thread via MessageChannel
+  const clients = await self.clients.matchAll({ type: 'window' });
+  if (clients.length === 0) {
+    return new Response(JSON.stringify({ error: 'No active player' }), {
+      status: 503,
+      headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
+    });
+  }
+
+  const client = clients[0];
+
+  try {
+    const response = await new Promise((resolve, reject) => {
+      const channel = new MessageChannel();
+      const timer = setTimeout(() => reject(new Error('IC timeout')), 5000);
+
+      channel.port1.onmessage = (msg) => {
+        clearTimeout(timer);
+        resolve(msg.data);
+      };
+
+      client.postMessage({
+        type: 'INTERACTIVE_CONTROL',
+        method,
+        path: icPath,
+        search: url.search,
+        body
+      }, [channel.port2]);
+    });
+
+    return new Response(response.body || '', {
+      status: response.status || 200,
+      headers: {
+        'Content-Type': response.contentType || 'application/json',
+        'Access-Control-Allow-Origin': '*'
+      }
+    });
+  } catch (error) {
+    log.error('IC handler error:', error);
+    return new Response(JSON.stringify({ error: error.message }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
+    });
+  }
+}
+
 // Handle fetch events
 self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
@@ -1363,10 +1576,16 @@ self.addEventListener('fetch', (event) => {
   // Only intercept specific requests, let everything else pass through
   const shouldIntercept =
     url.pathname.startsWith('/player/pwa/cache/') ||  // Cache requests (NEW PATH!)
+    url.pathname.startsWith('/player/pwa/ic/') ||  // Interactive Control requests from widgets
     url.pathname.startsWith('/player/') && (url.pathname.endsWith('.html') || url.pathname === '/player/') ||
     (url.pathname.includes('xmds.php') && url.searchParams.has('file') && event.request.method === 'GET');
 
   if (shouldIntercept) {
+    // Interactive Control routes - forward to main thread
+    if (url.pathname.startsWith('/player/pwa/ic/')) {
+      event.respondWith(handleInteractiveControl(event));
+      return;
+    }
     event.respondWith(requestHandler.handleRequest(event));
   }
   // Let POST requests and other requests pass through without interception
