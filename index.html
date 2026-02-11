@@ -100,6 +100,10 @@
 
   <!-- Check for configuration before loading player -->
   <script>
+    // TEMP: Force debug level for testing (shows video controls, verbose logging)
+    // Remove this line when debugging is no longer needed
+    localStorage.setItem('xibo_log_level', 'DEBUG');
+
     // Check if player is configured
     const params = new URLSearchParams(window.location.search);
     const hasUrlConfig = params.has('cmsAddress') && params.has('cmsKey');

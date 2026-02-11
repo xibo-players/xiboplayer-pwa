@@ -12,7 +12,7 @@ import { CacheProxy } from '@xiboplayer/cache';
 // @ts-ignore - JavaScript module
 import { PlayerCore } from '@xiboplayer/core';
 // @ts-ignore - JavaScript module
-import { createLogger } from '@xiboplayer/utils';
+import { createLogger, isDebug } from '@xiboplayer/utils';
 import { DownloadOverlay, getDefaultOverlayConfig } from './download-overlay.js';
 
 const log = createLogger('PWA');
@@ -93,45 +93,47 @@ class PwaPlayer {
       {
         // Provide media URL resolver - uses streaming via Service Worker
         getMediaUrl: async (fileId: number) => {
-          console.log(`[PWA] DEBUG: getMediaUrl called for media ${fileId}`);
+          log.debug(`getMediaUrl called for media ${fileId}`);
 
           // Check if file exists in cache (no blob creation - streaming!)
           const exists = await cacheProxy.hasFile('media', String(fileId));
 
           if (!exists) {
-            console.warn(`[PWA] Media ${fileId} not in cache`);
+            log.warn(`Media ${fileId} not in cache`);
             return '';
           }
 
           // Return direct URL - Service Worker streams via Range requests
           // This eliminates blob creation delay and reduces memory usage!
           const streamingUrl = `/player/pwa/cache/media/${fileId}`;
-          console.log(`[PWA] Using streaming URL for media ${fileId}: ${streamingUrl}`);
+          log.debug(`Using streaming URL for media ${fileId}: ${streamingUrl}`);
           return streamingUrl;
         },
 
         // Provide widget HTML resolver
         getWidgetHtml: async (widget: any) => {
           const cacheKey = `/player/pwa/cache/widget/${widget.layoutId}/${widget.regionId}/${widget.id}`;
-          console.log(`[PWA] Looking for widget HTML at: ${cacheKey}`, widget);
+          log.debug(`Looking for widget HTML at: ${cacheKey}`, widget);
 
           try {
             const cache = await caches.open('xibo-media-v1');
             const response = await cache.match(cacheKey);
 
             if (response) {
-              const html = await response.text();
-              console.log(`[PWA] ✓ Retrieved widget HTML for ${widget.type} ${widget.id} (${html.length} bytes)`);
-              return html;
+              log.debug(`Widget HTML cached at ${cacheKey}, using cache URL for iframe`);
+              // Return cache URL + fallback HTML for hard reload recovery
+              // On Ctrl+Shift+R, iframe.src navigation bypasses SW → 404
+              // Renderer detects this and falls back to widget.raw (original CMS URLs)
+              return { url: cacheKey, fallback: widget.raw || '' };
             } else {
-              console.warn(`[PWA] ✗ No cached HTML found at ${cacheKey}`);
+              log.warn(`No cached HTML found at ${cacheKey}`);
             }
           } catch (error) {
-            console.error(`[PWA] Failed to get cached widget HTML for ${widget.id}:`, error);
+            log.error(`Failed to get cached widget HTML for ${widget.id}:`, error);
           }
 
           // Fallback to widget.raw (XLF template)
-          console.warn(`[PWA] Using widget.raw fallback for ${widget.id}`);
+          log.warn(`Using widget.raw fallback for ${widget.id}`);
           return widget.raw || '';
         }
       }
@@ -262,7 +264,7 @@ class PwaPlayer {
         this.currentScheduleId = parseInt(schedule.campaigns[0].scheduleid) || -1;
       }
 
-      log.info('Current scheduleId for stats:', this.currentScheduleId);
+      log.debug('Current scheduleId for stats:', this.currentScheduleId);
     });
 
     this.core.on('layout-prepare-request', async (layoutId: number) => {
@@ -289,6 +291,21 @@ class PwaPlayer {
       log.info('XMR connected:', url);
     });
 
+    // React to CMS log level changes — toggle download overlay at runtime
+    this.core.on('log-level-changed', () => {
+      const debugNow = isDebug();
+      log.info(`Log level changed, debug=${debugNow}`);
+
+      if (debugNow && !this.downloadOverlay) {
+        this.downloadOverlay = new DownloadOverlay(getDefaultOverlayConfig(), cacheProxy);
+        log.info('Download overlay enabled (log level → DEBUG)');
+      } else if (!debugNow && this.downloadOverlay) {
+        this.downloadOverlay.destroy();
+        this.downloadOverlay = null;
+        log.info('Download overlay disabled (log level above DEBUG)');
+      }
+    });
+
     // Display settings events
     if (this.displaySettings) {
       this.displaySettings.on('interval-changed', (newInterval: number) => {
@@ -310,7 +327,7 @@ class PwaPlayer {
     // Listen for media downloads completing
     window.addEventListener('media-cached', async (event: any) => {
       const mediaId = event.detail?.id;
-      console.log(`[PWA] Media ${mediaId} download completed`);
+      log.debug(`Media ${mediaId} download completed`);
 
       // Notify core that media is ready
       this.core.notifyMediaReady(mediaId);
@@ -334,7 +351,7 @@ class PwaPlayer {
       const { type, fileId, fileType } = event.data;
 
       if (type === 'FILE_CACHED') {
-        console.log(`[PWA] Service Worker cached ${fileType}/${fileId}`);
+        log.debug(`Service Worker cached ${fileType}/${fileId}`);
 
         // Notify PlayerCore that file is ready
         // Pass fileType so PlayerCore can distinguish layout files from media files
@@ -354,9 +371,6 @@ class PwaPlayer {
       this.updateStatus(`Playing layout ${layoutId}`);
       this.core.setCurrentLayout(layoutId);
 
-      // Record play for max plays per hour tracking
-      scheduleManager?.recordPlay(layoutId.toString());
-
       // Track stats: start layout
       if (this.statsCollector) {
         this.statsCollector.startLayout(layoutId, this.currentScheduleId).catch((err: any) => {
@@ -367,6 +381,11 @@ class PwaPlayer {
 
     this.renderer.on('layoutEnd', (layoutId: number) => {
       log.info('Layout ended:', layoutId);
+
+      // Record play at END so maxPlaysPerHour doesn't interrupt the current play.
+      // Previously recorded at layoutStart, which caused periodic collections to
+      // filter the layout mid-playback (e.g., 200s video cut at 168s).
+      scheduleManager?.recordPlay(layoutId.toString());
 
       // Track stats: end layout
       if (this.statsCollector) {
@@ -398,7 +417,7 @@ class PwaPlayer {
 
     this.renderer.on('widgetStart', (data: any) => {
       const { widgetId, layoutId, mediaId } = data;
-      log.info('Widget started:', data.type, widgetId, 'media:', mediaId);
+      log.debug('Widget started:', data.type, widgetId, 'media:', mediaId);
 
       // Track stats: start widget/media
       if (this.statsCollector && mediaId) {
@@ -410,7 +429,7 @@ class PwaPlayer {
 
     this.renderer.on('widgetEnd', (data: any) => {
       const { widgetId, layoutId, mediaId } = data;
-      log.info('Widget ended:', data.type, widgetId, 'media:', mediaId);
+      log.debug('Widget ended:', data.type, widgetId, 'media:', mediaId);
 
       // Track stats: end widget/media
       if (this.statsCollector && mediaId) {
@@ -432,14 +451,14 @@ class PwaPlayer {
   private async prepareAndRenderLayout(layoutId: number) {
     // Guard: skip if already playing this layout (another event already rendered it)
     if (this.core.getCurrentLayoutId() === layoutId) {
-      log.info(`Layout ${layoutId} already playing, skipping duplicate prepare`);
+      log.debug(`Layout ${layoutId} already playing, skipping duplicate prepare`);
       return;
     }
 
     // Guard: prevent concurrent preparations of the same layout
     // (e.g., two check-pending-layout events firing close together)
     if (this.preparingLayoutId === layoutId) {
-      log.info(`Layout ${layoutId} preparation already in progress, skipping`);
+      log.debug(`Layout ${layoutId} preparation already in progress, skipping`);
       return;
     }
 
@@ -463,7 +482,7 @@ class PwaPlayer {
       const allMediaCached = await this.checkAllMediaCached(requiredMedia);
 
       if (!allMediaCached) {
-        console.log(`[PWA] Waiting for media to finish downloading for layout ${layoutId}`);
+        log.info(`Waiting for media to finish downloading for layout ${layoutId}`);
         this.updateStatus(`Preparing layout ${layoutId}...`);
         this.core.setPendingLayout(layoutId, requiredMedia);
         return; // Keep playing current layout until media is ready
@@ -517,7 +536,7 @@ class PwaPlayer {
         const exists = await cacheProxy.hasFile('media', String(mediaId));
 
         if (!exists) {
-          console.log(`[PWA] Media ${mediaId} not yet cached`);
+          log.debug(`Media ${mediaId} not yet cached`);
           return false;
         }
 
@@ -534,7 +553,7 @@ class PwaPlayer {
             const metadataText = await metadataResponse.text();
             const metadata = JSON.parse(metadataText);
             const sizeMB = (metadata.totalSize / 1024 / 1024).toFixed(1);
-            console.log(`[PWA] Media ${mediaId} cached as chunks (${metadata.numChunks} × ${(metadata.chunkSize / 1024 / 1024).toFixed(0)} MB = ${sizeMB} MB total)`);
+            log.debug(`Media ${mediaId} cached as chunks (${metadata.numChunks} x ${(metadata.chunkSize / 1024 / 1024).toFixed(0)} MB = ${sizeMB} MB total)`);
             continue;
           }
         }
@@ -545,7 +564,7 @@ class PwaPlayer {
 
         // Check for bad cache
         if (contentType === 'text/plain' || blob.size < 100) {
-          console.warn(`[PWA] Media ${mediaId} corrupted (${contentType}, ${blob.size} bytes) - will re-download`);
+          log.warn(`Media ${mediaId} corrupted (${contentType}, ${blob.size} bytes) - will re-download`);
 
           // Delete bad cache entry
           const cache = await caches.open('xibo-media-v1');
@@ -559,10 +578,10 @@ class PwaPlayer {
         const sizeKB = blob.size / 1024;
         const sizeMB = sizeKB / 1024;
         const sizeStr = sizeMB >= 1 ? `${sizeMB.toFixed(1)} MB` : `${sizeKB.toFixed(1)} KB`;
-        console.log(`[PWA] Media ${mediaId} cached and valid (${sizeStr})`);
+        log.debug(`Media ${mediaId} cached and valid (${sizeStr})`);
 
       } catch (error) {
-        console.warn(`[PWA] Unable to verify media ${mediaId}, assuming cached (offline mode)`);
+        log.warn(`Unable to verify media ${mediaId}, assuming cached (offline mode)`);
       }
     }
     return true;
@@ -578,11 +597,11 @@ class PwaPlayer {
 
     const cache = await caches.open('xibo-static-v1');
     for (const filename of filenames) {
-      const cached = await cache.match(`widget-resource:${filename}`);
+      const cached = await cache.match(`/player/pwa/cache/static/${filename}`);
       if (cached) {
-        console.log(`[PWA] Widget dependency ${filename} already cached by SW`);
+        log.debug(`Widget dependency ${filename} already cached by SW`);
       } else {
-        console.log(`[PWA] Widget dependency ${filename} not yet cached (will be fetched by SW on first use)`);
+        log.debug(`Widget dependency ${filename} not yet cached (will be fetched by SW on first use)`);
       }
     }
   }
@@ -618,11 +637,11 @@ class PwaPlayer {
                 let html: string;
                 if (cachedResponse) {
                   html = await cachedResponse.text();
-                  console.log(`[PWA] ✓ Using cached widget HTML for ${type} ${widgetId}`);
+                  log.debug(`Using cached widget HTML for ${type} ${widgetId}`);
                 } else {
                   html = await this.xmds.getResource(layoutId, regionId, widgetId);
                   await cacheManager.cacheWidgetHtml(layoutId, regionId, widgetId, html);
-                  console.log(`[PWA] ✓ Retrieved widget HTML for ${type} ${widgetId}`);
+                  log.debug(`Retrieved widget HTML for ${type} ${widgetId}`);
                 }
 
                 // Update raw content in XLF
@@ -635,7 +654,7 @@ class PwaPlayer {
                   mediaEl.appendChild(newRaw);
                 }
               } catch (error) {
-                console.warn(`[PWA] ✗ Failed to get widget HTML for ${type} ${widgetId}:`, error);
+                log.warn(`Failed to get widget HTML for ${type} ${widgetId}:`, error);
               }
             })()
           );
@@ -644,9 +663,9 @@ class PwaPlayer {
     }
 
     if (fetchPromises.length > 0) {
-      console.log(`[PWA] Fetching ${fetchPromises.length} widget HTML resources in parallel...`);
+      log.info(`Fetching ${fetchPromises.length} widget HTML resources in parallel...`);
       await Promise.all(fetchPromises);
-      console.log(`[PWA] All widget HTML fetched`);
+      log.debug('All widget HTML fetched');
     }
   }
 
@@ -686,7 +705,7 @@ class PwaPlayer {
       const stats = await this.statsCollector.getStatsForSubmission(50);
 
       if (stats.length === 0) {
-        log.info('No stats to submit');
+        log.debug('No stats to submit');
         return;
       }
 
@@ -702,7 +721,7 @@ class PwaPlayer {
         log.info('Stats submitted successfully');
         // Clear submitted stats from database
         await this.statsCollector.clearSubmittedStats(stats);
-        log.info(`Cleared ${stats.length} submitted stats from database`);
+        log.debug(`Cleared ${stats.length} submitted stats from database`);
       } else {
         log.warn('Stats submission failed (CMS returned false)');
       }
@@ -720,7 +739,11 @@ class PwaPlayer {
       statusEl.textContent = message;
       statusEl.className = `status status-${type}`;
     }
-    console.log(`[PWA] Status: ${message}`);
+    if (type === 'error') {
+      log.error('Status:', message);
+    } else {
+      log.info('Status:', message);
+    }
   }
 
   /**

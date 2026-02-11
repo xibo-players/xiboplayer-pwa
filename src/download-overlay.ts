@@ -190,9 +190,6 @@ export class DownloadOverlay {
  * Get default configuration based on environment
  */
 export function getDefaultOverlayConfig(): DownloadOverlayConfig {
-  const hostname = window.location.hostname;
-  const isDevelopment = hostname === 'localhost' || hostname === '127.0.0.1';
-
   // Check URL parameter override
   const urlParams = new URLSearchParams(window.location.search);
   const showDownloads = urlParams.get('showDownloads');
@@ -207,6 +204,6 @@ export function getDefaultOverlayConfig(): DownloadOverlayConfig {
     return { enabled: savedPref === 'true' };
   }
 
-  // Default: enabled in development, disabled in production
-  return { enabled: isDevelopment };
+  // Default: always enable overlay (autoHide hides it when no downloads active)
+  return { enabled: true, autoHide: true };
 }

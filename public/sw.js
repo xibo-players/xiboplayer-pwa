@@ -57,9 +57,13 @@ class SWLogger {
 
 const log = new SWLogger('SW');
 
-const SW_VERSION = '2026-02-09-prioritized-downloads';
+const SW_VERSION = '2026-02-11-chunk-race-fix';
 const CACHE_NAME = 'xibo-media-v1';
 const STATIC_CACHE = 'xibo-static-v1';
+
+// Track in-progress chunk storage operations (cacheKey → Promise)
+// Prevents serving chunked files before chunks are fully written to cache
+const pendingChunkStorage = new Map();
 
 // Dynamic chunk sizing based on available RAM
 // These are BASE values - actual values calculated from device RAM
@@ -464,6 +468,7 @@ class RequestHandler {
     this.downloadManager = downloadManager;
     this.cacheManager = cacheManager;
     this.blobCache = blobCache;
+    this.pendingFetches = new Map(); // filename → Promise<Response> for deduplication
     this.log = log; // Use main SW logger
   }
 
@@ -542,48 +547,60 @@ class RequestHandler {
     }
 
     // Handle widget resources (bundle.min.js, fonts)
+    // Uses pendingFetches for deduplication — concurrent requests share one fetch
     if (url.pathname.includes('xmds.php') &&
         (url.searchParams.get('fileType') === 'bundle' ||
          url.searchParams.get('fileType') === 'fontCss' ||
          url.searchParams.get('fileType') === 'font')) {
       const filename = url.searchParams.get('file');
-      const cacheKey = `widget-resource:${filename}`;
+      const cacheKey = `/player/pwa/cache/static/${filename}`;
       const cache = await caches.open(STATIC_CACHE);
 
       const cached = await cache.match(cacheKey);
       if (cached) {
         log.info('Serving widget resource from cache:', filename);
-        return cached;
+        return cached.clone();
       }
 
-      // Fetch from CMS (don't cache 404s!)
-      log.info('Fetching widget resource from CMS:', filename);
-      try {
-        const response = await fetch(event.request);
+      // Check if another request is already fetching this resource
+      if (this.pendingFetches.has(filename)) {
+        log.info('Deduplicating widget resource fetch:', filename);
+        const pending = await this.pendingFetches.get(filename);
+        return pending.clone();
+      }
 
-        // Only cache successful responses (not 404s!)
-        if (response.ok) {
-          log.info('Caching widget resource:', filename, `(${response.headers.get('Content-Type')})`);
-          // Clone BEFORE returning (response body can only be consumed once)
-          const responseClone = response.clone();
-          // Don't await - cache in background
-          cache.put(cacheKey, responseClone).catch(err => {
-            log.error('Failed to cache widget resource:', filename, err);
+      // Fetch from CMS with deduplication
+      log.info('Fetching widget resource from CMS:', filename);
+      const fetchPromise = (async () => {
+        try {
+          const response = await fetch(event.request);
+
+          if (response.ok) {
+            log.info('Caching widget resource:', filename, `(${response.headers.get('Content-Type')})`);
+            const responseClone = response.clone();
+            // AWAIT cache.put to prevent race condition
+            await cache.put(cacheKey, responseClone);
+            return response;
+          } else {
+            log.warn('Widget resource not available (', response.status, '):', filename, '- NOT caching');
+            return response;
+          }
+        } catch (error) {
+          log.error('Failed to fetch widget resource:', filename, error);
+          return new Response('Failed to fetch widget resource', {
+            status: 502,
+            statusText: 'Bad Gateway',
+            headers: { 'Content-Type': 'text/plain' }
           });
-          // Return original response
-          return response;
-        } else {
-          log.warn('Widget resource not available (', response.status, '):', filename, '- NOT caching');
-          // Return the error response (don't cache it)
-          return response;
         }
-      } catch (error) {
-        log.error('Failed to fetch widget resource:', filename, error);
-        return new Response('Failed to fetch widget resource', {
-          status: 502,
-          statusText: 'Bad Gateway',
-          headers: { 'Content-Type': 'text/plain' }
-        });
+      })();
+
+      this.pendingFetches.set(filename, fetchPromise);
+      try {
+        const response = await fetchPromise;
+        return response.clone();
+      } finally {
+        this.pendingFetches.delete(filename);
       }
     }
 
@@ -615,6 +632,38 @@ class RequestHandler {
       return fetch(event.request);
     }
 
+    // Handle static widget resources (rewritten URLs from widget HTML)
+    // These are absolute CMS URLs rewritten to /player/pwa/cache/static/<filename>
+    if (url.pathname.startsWith('/player/pwa/cache/static/')) {
+      const filename = url.pathname.split('/').pop();
+      log.info('Static resource request:', filename);
+
+      // Try xibo-static-v1 first
+      const staticCache = await caches.open(STATIC_CACHE);
+      const staticCached = await staticCache.match(`/player/pwa/cache/static/${filename}`);
+      if (staticCached) {
+        log.info('Serving static resource from static cache:', filename);
+        return staticCached.clone();
+      }
+
+      // Try xibo-media-v1 at the static path (dual-cached from download manager)
+      const mediaCached = await this.cacheManager.get(url.pathname);
+      if (mediaCached) {
+        log.info('Serving static resource from media cache:', filename);
+        return new Response(mediaCached.clone().body, {
+          headers: {
+            'Content-Type': mediaCached.headers.get('Content-Type') || 'application/octet-stream',
+            'Access-Control-Allow-Origin': '*',
+            'Cache-Control': 'public, max-age=31536000'
+          }
+        });
+      }
+
+      // Not cached yet — return 404 (SW widget-resource fetch will cache it on first CMS hit)
+      log.warn('Static resource not cached:', filename);
+      return new Response('Resource not cached', { status: 404 });
+    }
+
     // Only handle /player/pwa/cache/* requests below
     if (!url.pathname.startsWith('/player/pwa/cache/')) {
       log.info('NOT a cache request, returning null:', url.pathname);
@@ -626,8 +675,7 @@ class RequestHandler {
     // Handle widget HTML requests
     if (url.pathname.startsWith('/player/pwa/cache/widget/')) {
       log.info('Widget HTML request:', url.pathname);
-      const cacheKey = url.pathname.replace('/player', '');
-      const cached = await this.cacheManager.get(cacheKey);
+      const cached = await this.cacheManager.get(url.pathname);
       if (cached) {
         return new Response(cached.clone().body, {
           headers: {
@@ -837,7 +885,23 @@ class RequestHandler {
     const { totalSize, chunkSize, numChunks, contentType } = metadata;
 
     // Parse Range header using utility
-    const { start, end } = parseRangeHeader(rangeHeader, totalSize);
+    const { start, end: parsedEnd } = parseRangeHeader(rangeHeader, totalSize);
+
+    // Cap open-ended ranges (e.g., "bytes=0-") to a single chunk for progressive streaming.
+    // The browser only needs a small probe initially — it will make follow-up range requests
+    // for the moov atom and actual streaming data. This prevents assembling 271MB into one
+    // response blob and enables instant playback even while chunks are still being stored.
+    let end = parsedEnd;
+    const rangeStr = rangeHeader.replace(/bytes=/, '');
+    const isOpenEnded = rangeStr.indexOf('-') === rangeStr.length - 1;
+    if (isOpenEnded) {
+      const startChunkIdx = Math.floor(start / chunkSize);
+      const cappedEnd = Math.min((startChunkIdx + 1) * chunkSize - 1, totalSize - 1);
+      if (cappedEnd < end) {
+        end = cappedEnd;
+        log.info(`Progressive streaming: capping bytes=${start}- to chunk ${startChunkIdx} (bytes ${start}-${end}/${totalSize})`);
+      }
+    }
 
     // Calculate which chunks contain the requested range using utility
     const { startChunk, endChunk, count: chunksNeeded } = getChunksForRange(start, end, chunkSize);
@@ -845,14 +909,22 @@ class RequestHandler {
     this.log.debug(`Chunked range: bytes ${start}-${end}/${totalSize} (chunks ${startChunk}-${endChunk}, ${chunksNeeded} chunks)`);
 
     // Load required chunks (with blob caching!)
+    // Chunks may still be writing in background — retry if not yet available
     const chunkBlobs = [];
     for (let i = startChunk; i <= endChunk; i++) {
       const chunkKey = `${cacheKey}/chunk-${i}`;
 
       const chunkBlob = await this.blobCache.get(chunkKey, async () => {
-        const chunkResponse = await this.cacheManager.getChunk(cacheKey, i);
+        let chunkResponse = null;
+        for (let retry = 0; retry < 20; retry++) {
+          chunkResponse = await this.cacheManager.getChunk(cacheKey, i);
+          if (chunkResponse) break;
+          // Chunk not yet stored — background putChunked() still running
+          log.info(`Chunk ${i}/${numChunks} not yet available for ${cacheKey}, waiting... (attempt ${retry + 1})`);
+          await new Promise(resolve => setTimeout(resolve, 250));
+        }
         if (!chunkResponse) {
-          throw new Error(`Chunk ${i} not found for ${cacheKey}`);
+          throw new Error(`Chunk ${i} not found for ${cacheKey} after retries`);
         }
         return await chunkResponse.blob();
       });
@@ -974,6 +1046,11 @@ class MessageHandler {
       const fileInfo = await this.cacheManager.fileExists(cacheKey);
       if (fileInfo.exists) {
         this.log.debug('File already cached:', cacheKey, fileInfo.chunked ? '(chunked)' : '(whole file)');
+
+        // Ensure widget resources (.js, .css, fonts) are in the static cache
+        // This handles files cached before the dual-cache deploy
+        await this.ensureStaticCacheEntry(file);
+
         continue;
       }
 
@@ -1058,10 +1135,15 @@ class MessageHandler {
         });
         log.info('File ready for streaming, storing chunks in background:', cacheKey);
 
-        // Continue storing chunks in background (don't block)
-        this.cacheManager.putChunked(cacheKey, blob, contentType).catch(err => {
-          this.log.error('Background chunk storage failed:', cacheKey, err);
-        });
+        // Store chunks in background but track for race-condition safety
+        // handleChunkedRangeRequest() will await this if chunks aren't ready yet
+        const storagePromise = this.cacheManager.putChunked(cacheKey, blob, contentType)
+          .then(() => pendingChunkStorage.delete(cacheKey))
+          .catch(err => {
+            this.log.error('Background chunk storage failed:', cacheKey, err);
+            pendingChunkStorage.delete(cacheKey);
+          });
+        pendingChunkStorage.set(cacheKey, storagePromise);
 
       } else {
         await this.cacheManager.put(cacheKey, blob, contentType);
@@ -1079,11 +1161,96 @@ class MessageHandler {
         });
       }
 
+      // Also cache widget resources (.js, .css, fonts) for static serving
+      // This allows rewritten URLs (/player/pwa/cache/static/bundle.min.js) to resolve instantly
+      const filename = fileInfo.path ? (() => {
+        try { return new URL(fileInfo.path).searchParams.get('file'); } catch { return null; }
+      })() : null;
+
+      if (filename && (filename.endsWith('.js') || filename.endsWith('.css') ||
+          /\.(otf|ttf|woff2?|eot|svg)$/i.test(filename))) {
+        const staticCache = await caches.open(STATIC_CACHE);
+        const staticKey = `/player/pwa/cache/static/${filename}`;
+
+        // Determine correct content type for the resource
+        const ext = filename.split('.').pop().toLowerCase();
+        const staticContentType = {
+          'js': 'application/javascript',
+          'css': 'text/css',
+          'otf': 'font/otf',
+          'ttf': 'font/ttf',
+          'woff': 'font/woff',
+          'woff2': 'font/woff2',
+          'eot': 'application/vnd.ms-fontobject',
+          'svg': 'image/svg+xml'
+        }[ext] || 'application/octet-stream';
+
+        await Promise.all([
+          staticCache.put(staticKey, new Response(blob.slice(0, blob.size, blob.type), {
+            headers: { 'Content-Type': staticContentType }
+          })),
+          this.cacheManager.put(staticKey, blob.slice(0, blob.size, blob.type), staticContentType)
+        ]);
+
+        log.info('Also cached as static resource:', filename, `(${staticContentType})`);
+      }
+
       return blob;
     } catch (error) {
       this.log.error('Failed to cache after download:', fileInfo.id, error);
       throw error;
     }
+  }
+
+  /**
+   * Ensure widget resource files have static cache entries
+   * Handles files that were cached before the dual-cache deploy
+   */
+  async ensureStaticCacheEntry(fileInfo) {
+    const filename = fileInfo.path ? (() => {
+      try { return new URL(fileInfo.path).searchParams.get('file'); } catch { return null; }
+    })() : null;
+
+    if (!filename || !(filename.endsWith('.js') || filename.endsWith('.css') ||
+        /\.(otf|ttf|woff2?|eot|svg)$/i.test(filename))) {
+      return; // Not a widget resource
+    }
+
+    const staticCache = await caches.open(STATIC_CACHE);
+    const staticKey = `/player/pwa/cache/static/${filename}`;
+
+    // Check if already in static cache
+    const existing = await staticCache.match(staticKey);
+    if (existing) return; // Already populated
+
+    // Read from media cache and copy to static cache
+    const cacheKey = `/player/pwa/cache/${fileInfo.type}/${fileInfo.id}`;
+    const cached = await this.cacheManager.get(cacheKey);
+    if (!cached) return;
+
+    const blob = await cached.blob();
+    const ext = filename.split('.').pop().toLowerCase();
+    const staticContentType = {
+      'js': 'application/javascript',
+      'css': 'text/css',
+      'otf': 'font/otf',
+      'ttf': 'font/ttf',
+      'woff': 'font/woff',
+      'woff2': 'font/woff2',
+      'eot': 'application/vnd.ms-fontobject',
+      'svg': 'image/svg+xml'
+    }[ext] || 'application/octet-stream';
+
+    const staticPathKey = `/player/pwa/cache/static/${filename}`;
+
+    await Promise.all([
+      staticCache.put(staticKey, new Response(blob.slice(0, blob.size, blob.type), {
+        headers: { 'Content-Type': staticContentType }
+      })),
+      this.cacheManager.put(staticPathKey, blob.slice(0, blob.size, blob.type), staticContentType)
+    ]);
+
+    log.info('Backfilled static cache for:', filename, `(${staticContentType}, ${blob.size} bytes)`);
   }
 
   /**

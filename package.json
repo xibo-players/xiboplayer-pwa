@@ -18,7 +18,7 @@
     "@xiboplayer/xmr": "file:../../packages/xmr",
     "@xiboplayer/core": "file:../../packages/core",
     "@xiboplayer/stats": "file:../../packages/stats",
-    "@xiboplayer/display-settings": "file:../../packages/display-settings",
+    "@xiboplayer/settings": "file:../../packages/settings",
     "xml2js": "^0.6.2",
     "nanoevents": "^9.0.0",
     "html2canvas": "^1.4.1"
