@@ -739,6 +739,14 @@ class PwaPlayer {
           }
           break;
 
+        case 'previousWidget':
+          this.renderer.previousWidget(data.source?.regionId);
+          break;
+
+        case 'nextWidget':
+          this.renderer.nextWidget(data.source?.regionId);
+          break;
+
         case 'command':
           if (commandCode) {
             this.core.executeCommand(commandCode);

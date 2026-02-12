@@ -7,6 +7,7 @@ export default defineConfig({
     outDir: 'dist',
     sourcemap: true,
     rollupOptions: {
+      external: ['hls.js'],
       input: {
         main: path.resolve(__dirname, 'index.html'),
         setup: path.resolve(__dirname, 'setup.html'),
