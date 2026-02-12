@@ -295,6 +295,25 @@
           <input type="text" id="display-name" placeholder="My Display" required>
         </div>
 
+        <!-- Optional: Auto-authorize via CMS API -->
+        <details id="api-details" style="margin-bottom: 16px;">
+          <summary style="cursor: pointer; color: #0097D8; font-size: 13px; margin-bottom: 8px;">
+            Auto-authorize via API (optional)
+          </summary>
+          <div class="form-group" style="margin-top: 8px;">
+            <label for="api-client-id">API Client ID</label>
+            <input type="text" id="api-client-id" placeholder="From CMS > Applications">
+          </div>
+          <div class="form-group">
+            <label for="api-client-secret">API Client Secret</label>
+            <input type="password" id="api-client-secret" placeholder="Application secret">
+          </div>
+          <div style="font-size: 11px; color: #666; margin-bottom: 8px;">
+            Create an Application in CMS &gt; Administration &gt; Applications with client_credentials grant.
+            If provided, the display will be auto-authorized after registration.
+          </div>
+        </details>
+
         <button type="submit" id="submit-btn" disabled>Loading...</button>
       </form>
 
@@ -345,7 +364,7 @@
   </div>
 
   <script type="module">
-    import { config } from '@xiboplayer/utils';
+    import { config, CmsApiClient } from '@xiboplayer/utils';
     import { XmdsClient } from '@xiboplayer/xmds';
 
     // ── Elements ──
@@ -439,11 +458,52 @@
       pollTimer = null;
     }
 
+    // ── Auto-authorize via CMS API ──
+    async function tryAutoAuthorize(cmsAddress, hardwareKey) {
+      const clientId = document.getElementById('api-client-id').value.trim();
+      const clientSecret = document.getElementById('api-client-secret').value.trim();
+      if (!clientId || !clientSecret) return false;
+
+      try {
+        const api = new CmsApiClient({ baseUrl: cmsAddress, clientId, clientSecret });
+        await api.authenticate();
+
+        const display = await api.findDisplay(hardwareKey);
+        if (!display) {
+          console.log('[Setup] Display not found via API (may not be registered yet)');
+          return false;
+        }
+
+        if (display.licensed === 1) {
+          console.log('[Setup] Display already authorized');
+          return true;
+        }
+
+        // Auto-authorize
+        await api.authorizeDisplay(display.displayId);
+        console.log('[Setup] Display auto-authorized via API!');
+
+        // Save API credentials for future use
+        config.apiClientId = clientId;
+        config.apiClientSecret = clientSecret;
+
+        return true;
+      } catch (error) {
+        console.warn('[Setup] Auto-authorize failed:', error.message);
+        return false;
+      }
+    }
+
     // ── Pre-fill if already configured ──
     if (config.isConfigured()) {
       document.getElementById('cms-address').value = config.cmsAddress;
       document.getElementById('cms-key').value = config.cmsKey;
       document.getElementById('display-name').value = config.displayName;
+    }
+    // Pre-fill API credentials if saved
+    if (config.apiClientId) {
+      document.getElementById('api-client-id').value = config.apiClientId;
+      document.getElementById('api-client-secret').value = config.apiClientSecret || '';
     }
 
     // ── Form Submit ──
@@ -474,6 +534,19 @@
         if (result.code === 'READY') {
           showSuccess();
         } else {
+          // Try auto-authorize via CMS API if credentials provided
+          submitBtn.textContent = 'Authorizing...';
+          const autoAuthed = await tryAutoAuthorize(cmsAddress, hwKey);
+
+          if (autoAuthed) {
+            // Verify with XMDS
+            const recheck = await xmds.registerDisplay();
+            if (recheck.code === 'READY') {
+              showSuccess();
+              return;
+            }
+          }
+
           // Not authorized yet — switch to polling phase
           startPolling(displayName);
         }
