@@ -4,6 +4,17 @@
  */
 
 /**
+ * Dynamic base path derived from the Service Worker's registration scope.
+ * Allows the same build to serve /player/pwa/, /player/pwa-xmds/, /player/pwa-xlr/.
+ */
+export const BASE = (() => {
+  if (typeof self !== 'undefined' && self.registration?.scope) {
+    return new URL(self.registration.scope).pathname.replace(/\/$/, '');
+  }
+  return '/player/pwa'; // fallback
+})();
+
+/**
  * Format byte size to human-readable string
  * @param {number} bytes - Size in bytes
  * @param {number} decimals - Decimal places (default: 1)
@@ -98,14 +109,14 @@ export function createErrorResponse(message, status = 500) {
  * Cache key builder
  */
 export const CacheKey = {
-  media: (fileId) => `/player/pwa/cache/media/${fileId}`,
-  layout: (layoutId) => `/player/pwa/cache/layout/${layoutId}`,
-  widget: (layoutId, regionId, widgetId) => `/player/pwa/cache/widget/${layoutId}/${regionId}/${widgetId}`,
+  media: (fileId) => `${BASE}/cache/media/${fileId}`,
+  layout: (layoutId) => `${BASE}/cache/layout/${layoutId}`,
+  widget: (layoutId, regionId, widgetId) => `${BASE}/cache/widget/${layoutId}/${regionId}/${widgetId}`,
   chunk: (baseKey, chunkIndex) => `${baseKey}/chunk-${chunkIndex}`,
   metadata: (baseKey) => `${baseKey}/metadata`,
 
   // Normalize key from URL pathname
-  fromPathname: (pathname) => pathname.startsWith('/player/pwa') ? pathname : `/player/pwa${pathname}`
+  fromPathname: (pathname) => pathname.startsWith(BASE) ? pathname : `${BASE}${pathname}`
 };
 
 /**

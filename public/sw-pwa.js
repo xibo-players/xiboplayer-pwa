@@ -454,7 +454,7 @@ class BlobCache {
       const utilization = (this.currentBytes / this.maxBytes * 100).toFixed(1);
       this.log.debug(`CACHED: ${cacheKey} (${formatBytes(blob.size)}) - utilization: ${utilization}%`);
     } else {
-      this.log.warn(`File too large to cache: ${cacheKey} (${formatBytes(blob.size)} > ${formatBytes(this.maxBytes)})`);
+      this.log.debug(`Skipping memory cache (too large): ${cacheKey} (${formatBytes(blob.size)} > ${formatBytes(this.maxBytes)})`);
     }
 
     return blob;
@@ -1062,7 +1062,12 @@ class MessageHandler {
   async handleMessage(event) {
     const { type, data } = event.data;
 
-    this.log.info('Received:', type);
+    // Log progress polls at debug (high-frequency), everything else at info
+    if (type === 'GET_DOWNLOAD_PROGRESS') {
+      this.log.debug('Received:', type);
+    } else {
+      this.log.info('Received:', type);
+    }
 
     switch (type) {
       case 'PING':

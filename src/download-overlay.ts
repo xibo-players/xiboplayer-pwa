@@ -28,7 +28,8 @@ export class DownloadOverlay {
 
     if (this.config.enabled) {
       this.createOverlay();
-      this.startUpdating();
+      // Don't start polling yet — startUpdating() is called on demand
+      // when downloads begin, and stops automatically when idle.
     }
   }
 
@@ -84,21 +85,22 @@ export class DownloadOverlay {
         if (html) {
           this.overlay.innerHTML = html;
           this.overlay.style.display = 'block';
-        } else if (this.config.autoHide) {
-          this.overlay.style.display = 'none';
+        } else {
+          // No active downloads — stop polling to avoid SW message noise
+          this.stopUpdating();
+          if (this.config.autoHide) {
+            this.overlay.style.display = 'none';
+          }
         }
       } else {
         throw new Error('Progress request failed');
       }
     } catch (error) {
-      // Fallback: Show basic info
-      this.overlay.innerHTML = `
-        <div style="color: #f80;">
-          <strong>Download Status</strong><br>
-          Service Worker not ready<br>
-          <small>Or no downloads active</small>
-        </div>
-      `;
+      // No SW controller or request failed — stop polling
+      this.stopUpdating();
+      if (this.config.autoHide && this.overlay) {
+        this.overlay.style.display = 'none';
+      }
     }
   }
 
@@ -156,18 +158,29 @@ export class DownloadOverlay {
     return `${(mb / 1024).toFixed(1)} GB`;
   }
 
-  private startUpdating() {
+  /**
+   * Start polling SW for download progress.
+   * Safe to call multiple times — won't create duplicate timers.
+   */
+  public startUpdating() {
+    if (this.updateTimer) return; // Already polling
     this.updateTimer = window.setInterval(() => {
       this.updateOverlay();
     }, this.config.updateInterval);
   }
 
-  public destroy() {
+  /**
+   * Stop polling. Called automatically when no downloads are active.
+   */
+  private stopUpdating() {
     if (this.updateTimer) {
       clearInterval(this.updateTimer);
       this.updateTimer = null;
     }
+  }
 
+  public destroy() {
+    this.stopUpdating();
     if (this.overlay) {
       this.overlay.remove();
       this.overlay = null;
@@ -179,7 +192,7 @@ export class DownloadOverlay {
 
     if (enabled && !this.overlay) {
       this.createOverlay();
-      this.startUpdating();
+      // Polling starts on demand via startUpdating()
     } else if (!enabled && this.overlay) {
       this.destroy();
     }

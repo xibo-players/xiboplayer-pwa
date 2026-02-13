@@ -11,13 +11,13 @@ export default defineConfig({
       input: {
         main: path.resolve(__dirname, 'index.html'),
         setup: path.resolve(__dirname, 'setup.html'),
-        sw: path.resolve(__dirname, 'public/sw.js'),
+        sw: path.resolve(__dirname, 'public/sw-pwa.js'),
       },
       output: {
         entryFileNames: (chunkInfo) => {
           // Service Worker goes to root of dist (not assets/)
           if (chunkInfo.name === 'sw') {
-            return 'sw.js';
+            return 'sw-pwa.js';
           }
           return 'assets/[name]-[hash].js';
         },
