@@ -22,7 +22,8 @@ import {
   TIMEOUTS,
   getChunkBoundaries,
   getChunksForRange,
-  extractRangeFromChunks
+  extractRangeFromChunks,
+  BASE
 } from './sw-utils.js';
 
 // Simple logger for Service Worker context
@@ -57,13 +58,21 @@ class SWLogger {
 
 const log = new SWLogger('SW');
 
-const SW_VERSION = '2026-02-12-static-resource-cache';
+const SW_VERSION = '2026-02-13-090851';
 const CACHE_NAME = 'xibo-media-v1';
 const STATIC_CACHE = 'xibo-static-v1';
 
 // Track in-progress chunk storage operations (cacheKey → Promise)
 // Prevents serving chunked files before chunks are fully written to cache
 const pendingChunkStorage = new Map();
+
+// In-memory metadata cache: cacheKey → metadata object
+// Eliminates Cache API lookups for chunk metadata on every Range request
+const metadataCache = new Map();
+
+// Pending chunk blob loads: chunkKey → Promise<Blob>
+// Coalesces concurrent reads for the same chunk into a single Cache API operation
+const pendingChunkLoads = new Map();
 
 // Dynamic chunk sizing based on available RAM
 // These are BASE values - actual values calculated from device RAM
@@ -154,10 +163,9 @@ const CONCURRENT_CHUNKS = CHUNK_CONFIG.concurrency;  // Same as file concurrency
 
 // Static files to cache on install
 const STATIC_FILES = [
-  '/player/',
-  '/player/index.html',
-  '/player/setup.html',
-  '/player/manifest.json'
+  BASE + '/',
+  BASE + '/index.html',
+  BASE + '/setup.html'
 ];
 
 log.info('Loading modular Service Worker:', SW_VERSION);
@@ -208,10 +216,25 @@ class CacheManager {
   }
 
   /**
-   * Delete file from cache
+   * Delete file from cache (whole file, or all chunks + metadata)
    */
   async delete(cacheKey) {
     if (!this.cache) await this.init();
+
+    // Clear in-memory metadata cache
+    const meta = metadataCache.get(cacheKey);
+    metadataCache.delete(cacheKey);
+
+    // If chunked, delete all chunks + metadata
+    if (meta) {
+      const promises = [this.cache.delete(`${cacheKey}/metadata`)];
+      for (let i = 0; i < meta.numChunks; i++) {
+        promises.push(this.cache.delete(`${cacheKey}/chunk-${i}`));
+      }
+      await Promise.all(promises);
+      return true;
+    }
+
     return await this.cache.delete(cacheKey);
   }
 
@@ -222,27 +245,37 @@ class CacheManager {
     if (!this.cache) await this.init();
     const keys = await this.cache.keys();
     await Promise.all(keys.map(key => this.cache.delete(key)));
+    metadataCache.clear();
     this.log.info('Cleared', keys.length, 'cached files');
   }
 
   /**
    * Check if file exists (supports both whole files and chunked storage)
-   * Single source of truth for file existence checks
+   * Single source of truth for file existence checks.
+   * Uses in-memory metadataCache to avoid Cache API lookups on hot paths.
    * @param {string} cacheKey - Full cache key (e.g., /player/pwa/cache/media/6)
    * @returns {Promise<{exists: boolean, chunked: boolean, metadata: Object|null}>}
    */
   async fileExists(cacheKey) {
     if (!this.cache) await this.init();
 
-    // Check for whole file first (backward compatibility)
+    // Fast path: check in-memory metadata cache first (no async I/O)
+    const cachedMeta = metadataCache.get(cacheKey);
+    if (cachedMeta) {
+      return { exists: true, chunked: true, metadata: cachedMeta };
+    }
+
+    // Check for whole file
     const wholeFile = await this.get(cacheKey);
     if (wholeFile) {
       return { exists: true, chunked: false, metadata: null };
     }
 
-    // Check for chunked metadata
+    // Check for chunked metadata (Cache API fallback)
     const metadata = await this.getMetadata(cacheKey);
     if (metadata && metadata.chunked) {
+      // Populate in-memory cache for future requests
+      metadataCache.set(cacheKey, metadata);
       return { exists: true, chunked: true, metadata };
     }
 
@@ -296,6 +329,8 @@ class CacheManager {
       headers: { 'Content-Type': 'application/json' }
     });
     await this.cache.put(`${cacheKey}/metadata`, metadataResponse);
+    // Populate in-memory cache
+    metadataCache.set(cacheKey, metadata);
 
     // Store chunks
     for (let i = 0; i < numChunks; i++) {
@@ -323,18 +358,27 @@ class CacheManager {
   }
 
   /**
-   * Get metadata for chunked file
+   * Get metadata for chunked file.
+   * Checks in-memory cache first to avoid Cache API I/O on hot paths.
    * @param {string} cacheKey - Base cache key
    * @returns {Promise<Object|null>}
    */
   async getMetadata(cacheKey) {
+    // Fast path: in-memory cache
+    const cached = metadataCache.get(cacheKey);
+    if (cached) return cached;
+
     if (!this.cache) await this.init();
 
-    const cached = await this.cache.match(`${cacheKey}/metadata`);
-    if (!cached) return null;
+    const response = await this.cache.match(`${cacheKey}/metadata`);
+    if (!response) return null;
 
-    const text = await cached.text();
-    return JSON.parse(text);
+    const text = await response.text();
+    const metadata = JSON.parse(text);
+
+    // Populate in-memory cache
+    metadataCache.set(cacheKey, metadata);
+    return metadata;
   }
 
   /**
@@ -531,10 +575,9 @@ class RequestHandler {
     log.info('pathname:', url.pathname);
 
     // Handle static files (player pages)
-    if (url.pathname === '/player/' ||
-        url.pathname === '/player/index.html' ||
-        url.pathname === '/player/setup.html' ||
-        url.pathname === '/player/manifest.json') {
+    if (url.pathname === BASE + '/' ||
+        url.pathname === BASE + '/index.html' ||
+        url.pathname === BASE + '/setup.html') {
       const cache = await caches.open(STATIC_CACHE);
       const cached = await cache.match(event.request);
       if (cached) {
@@ -553,7 +596,7 @@ class RequestHandler {
          url.searchParams.get('fileType') === 'fontCss' ||
          url.searchParams.get('fileType') === 'font')) {
       const filename = url.searchParams.get('file');
-      const cacheKey = `/player/pwa/cache/static/${filename}`;
+      const cacheKey = `${BASE}/cache/static/${filename}`;
       const cache = await caches.open(STATIC_CACHE);
 
       const cached = await cache.match(cacheKey);
@@ -611,9 +654,9 @@ class RequestHandler {
       const fileType = url.searchParams.get('type');
       const cacheType = fileType === 'L' ? 'layout' : 'media';
 
-      log.info('XMDS request:', filename, 'type:', fileType, '→ /player/pwa/cache/' + cacheType + '/' + fileId);
+      log.info('XMDS request:', filename, 'type:', fileType, '→', BASE + '/cache/' + cacheType + '/' + fileId);
 
-      const cacheKey = `/player/pwa/cache/${cacheType}/${fileId}`;
+      const cacheKey = `${BASE}/cache/${cacheType}/${fileId}`;
       const cached = await this.cacheManager.get(cacheKey);
       if (cached) {
         // Clone the response to avoid consuming the body
@@ -634,13 +677,13 @@ class RequestHandler {
 
     // Handle static widget resources (rewritten URLs from widget HTML)
     // These are absolute CMS URLs rewritten to /player/pwa/cache/static/<filename>
-    if (url.pathname.startsWith('/player/pwa/cache/static/')) {
+    if (url.pathname.startsWith(BASE + '/cache/static/')) {
       const filename = url.pathname.split('/').pop();
       log.info('Static resource request:', filename);
 
       // Try xibo-static-v1 first
       const staticCache = await caches.open(STATIC_CACHE);
-      const staticCached = await staticCache.match(`/player/pwa/cache/static/${filename}`);
+      const staticCached = await staticCache.match(`${BASE}/cache/static/${filename}`);
       if (staticCached) {
         log.info('Serving static resource from static cache:', filename);
         return staticCached.clone();
@@ -665,7 +708,7 @@ class RequestHandler {
     }
 
     // Only handle /player/pwa/cache/* requests below
-    if (!url.pathname.startsWith('/player/pwa/cache/')) {
+    if (!url.pathname.startsWith(BASE + '/cache/')) {
       log.info('NOT a cache request, returning null:', url.pathname);
       return null; // Let browser handle
     }
@@ -673,7 +716,7 @@ class RequestHandler {
     log.info('IS a cache request, proceeding...', url.pathname);
 
     // Handle widget HTML requests
-    if (url.pathname.startsWith('/player/pwa/cache/widget/')) {
+    if (url.pathname.startsWith(BASE + '/cache/widget/')) {
       log.info('Widget HTML request:', url.pathname);
       const cached = await this.cacheManager.get(url.pathname);
       if (cached) {
@@ -916,32 +959,45 @@ class RequestHandler {
 
     this.log.debug(`Chunked range: bytes ${start}-${end}/${totalSize} (chunks ${startChunk}-${endChunk}, ${chunksNeeded} chunks)`);
 
-    // Load required chunks (with blob caching!)
-    // Chunks may still be writing in background — retry if not yet available
-    const chunkBlobs = [];
-    for (let i = startChunk; i <= endChunk; i++) {
-      const chunkKey = `${cacheKey}/chunk-${i}`;
+    // Load required chunks with coalescing + blob caching.
+    // Coalescing: if multiple Range requests need the same chunk simultaneously,
+    // they share one Cache API read via pendingChunkLoads Map.
+    const chunkBlobs = await Promise.all(
+      Array.from({ length: endChunk - startChunk + 1 }, (_, idx) => {
+        const i = startChunk + idx;
+        const chunkKey = `${cacheKey}/chunk-${i}`;
 
-      const chunkBlob = await this.blobCache.get(chunkKey, async () => {
-        let chunkResponse = null;
-        for (let retry = 0; retry < 120; retry++) {
-          chunkResponse = await this.cacheManager.getChunk(cacheKey, i);
-          if (chunkResponse) break;
-          // Chunk not yet stored — progressive download still running.
-          // 120 × 500ms = 60s max wait per chunk (50MB @ ~1MB/s worst case).
-          if (retry % 10 === 0) {
-            log.info(`Chunk ${i}/${numChunks} not yet available for ${cacheKey}, waiting... (attempt ${retry + 1})`);
+        return this.blobCache.get(chunkKey, () => {
+          // Coalesce: reuse in-flight Cache API read if another request is
+          // already loading this exact chunk
+          if (pendingChunkLoads.has(chunkKey)) {
+            return pendingChunkLoads.get(chunkKey);
           }
-          await new Promise(resolve => setTimeout(resolve, 500));
-        }
-        if (!chunkResponse) {
-          throw new Error(`Chunk ${i} not found for ${cacheKey} after retries`);
-        }
-        return await chunkResponse.blob();
-      });
 
-      chunkBlobs.push(chunkBlob);
-    }
+          const loadPromise = (async () => {
+            let chunkResponse = null;
+            for (let retry = 0; retry < 120; retry++) {
+              chunkResponse = await this.cacheManager.getChunk(cacheKey, i);
+              if (chunkResponse) break;
+              // Chunk not yet stored — progressive download still running.
+              // 120 × 500ms = 60s max wait per chunk (50MB @ ~1MB/s worst case).
+              if (retry % 10 === 0) {
+                log.info(`Chunk ${i}/${numChunks} not yet available for ${cacheKey}, waiting... (attempt ${retry + 1})`);
+              }
+              await new Promise(resolve => setTimeout(resolve, 500));
+            }
+            if (!chunkResponse) {
+              throw new Error(`Chunk ${i} not found for ${cacheKey} after retries`);
+            }
+            return await chunkResponse.blob();
+          })();
+
+          pendingChunkLoads.set(chunkKey, loadPromise);
+          loadPromise.finally(() => pendingChunkLoads.delete(chunkKey));
+          return loadPromise;
+        });
+      })
+    );
 
     // Calculate slice offsets within the chunks
     const firstChunkStart = start % chunkSize;
@@ -1050,7 +1106,7 @@ class MessageHandler {
 
     let deleted = 0;
     for (const file of files) {
-      const cacheKey = `/player/pwa/cache/${file.type}/${file.id}`;
+      const cacheKey = `${BASE}/cache/${file.type}/${file.id}`;
       const wasDeleted = await this.cacheManager.delete(cacheKey);
       if (wasDeleted) {
         this.log.info('Purged:', cacheKey);
@@ -1102,7 +1158,7 @@ class MessageHandler {
         continue;
       }
 
-      const cacheKey = `/player/pwa/cache/${file.type}/${file.id}`;
+      const cacheKey = `${BASE}/cache/${file.type}/${file.id}`;
 
       // Check if already cached (supports both whole files and chunked storage)
       const fileInfo = await this.cacheManager.fileExists(cacheKey);
@@ -1158,7 +1214,7 @@ class MessageHandler {
    */
   async cacheFileAfterDownload(task, fileInfo) {
     try {
-      const cacheKey = `/player/pwa/cache/${fileInfo.type}/${fileInfo.id}`;
+      const cacheKey = `${BASE}/cache/${fileInfo.type}/${fileInfo.id}`;
       const contentType = fileInfo.type === 'layout' ? 'text/xml' :
                           fileInfo.type === 'widget' ? 'text/html' :
                           'application/octet-stream';
@@ -1225,6 +1281,8 @@ class MessageHandler {
       JSON.stringify(metadata),
       { headers: { 'Content-Type': 'application/json' } }
     ));
+    // Also populate in-memory cache so Range requests skip Cache API lookup
+    metadataCache.set(cacheKey, metadata);
     metadataStored = true;
     log.info('Metadata stored, ready for progressive streaming:', cacheKey);
 
@@ -1344,7 +1402,7 @@ class MessageHandler {
       (async () => {
         try {
           const staticCache = await caches.open(STATIC_CACHE);
-          const staticKey = `/player/pwa/cache/static/${filename}`;
+          const staticKey = `${BASE}/cache/static/${filename}`;
 
           const ext = filename.split('.').pop().toLowerCase();
           const staticContentType = {
@@ -1388,14 +1446,14 @@ class MessageHandler {
     }
 
     const staticCache = await caches.open(STATIC_CACHE);
-    const staticKey = `/player/pwa/cache/static/${filename}`;
+    const staticKey = `${BASE}/cache/static/${filename}`;
 
     // Check if already in static cache
     const existing = await staticCache.match(staticKey);
     if (existing) return; // Already populated
 
     // Read from media cache and copy to static cache
-    const cacheKey = `/player/pwa/cache/${fileInfo.type}/${fileInfo.id}`;
+    const cacheKey = `${BASE}/cache/${fileInfo.type}/${fileInfo.id}`;
     const cached = await this.cacheManager.get(cacheKey);
     if (!cached) return;
 
@@ -1412,7 +1470,7 @@ class MessageHandler {
       'svg': 'image/svg+xml'
     }[ext] || 'application/octet-stream';
 
-    const staticPathKey = `/player/pwa/cache/static/${filename}`;
+    const staticPathKey = `${BASE}/cache/static/${filename}`;
 
     await Promise.all([
       staticCache.put(staticKey, new Response(blob.slice(0, blob.size, blob.type), {
@@ -1511,7 +1569,7 @@ self.addEventListener('activate', (event) => {
  */
 async function handleInteractiveControl(event) {
   const url = new URL(event.request.url);
-  const icPath = url.pathname.replace('/player/pwa/ic', '');
+  const icPath = url.pathname.replace(BASE + '/ic', '');
   const method = event.request.method;
 
   log.info('Interactive Control request:', method, icPath);
@@ -1575,14 +1633,14 @@ self.addEventListener('fetch', (event) => {
 
   // Only intercept specific requests, let everything else pass through
   const shouldIntercept =
-    url.pathname.startsWith('/player/pwa/cache/') ||  // Cache requests (NEW PATH!)
-    url.pathname.startsWith('/player/pwa/ic/') ||  // Interactive Control requests from widgets
+    url.pathname.startsWith(BASE + '/cache/') ||  // Cache requests
+    url.pathname.startsWith(BASE + '/ic/') ||  // Interactive Control requests from widgets
     url.pathname.startsWith('/player/') && (url.pathname.endsWith('.html') || url.pathname === '/player/') ||
     (url.pathname.includes('xmds.php') && url.searchParams.has('file') && event.request.method === 'GET');
 
   if (shouldIntercept) {
     // Interactive Control routes - forward to main thread
-    if (url.pathname.startsWith('/player/pwa/ic/')) {
+    if (url.pathname.startsWith(BASE + '/ic/')) {
       event.respondWith(handleInteractiveControl(event));
       return;
     }
