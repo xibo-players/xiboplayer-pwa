@@ -45,7 +45,7 @@ class PwaPlayer {
   private currentScheduleId: number = -1; // Track scheduleId for stats
   private preparingLayoutId: number | null = null; // Guard against concurrent prepareAndRenderLayout calls
   private _screenshotInterval: any = null;
-  private _screenshotMethod: 'native' | 'html2canvas' | null = null;
+  private _screenshotMethod: 'electron' | 'native' | 'html2canvas' | null = null;
   private _screenshotInFlight = false; // Concurrency guard — one capture at a time
   private _html2canvasMod: any = null; // Pre-loaded module
   private _wakeLock: any = null; // Screen Wake Lock sentinel
@@ -1142,7 +1142,10 @@ class PwaPlayer {
   /**
    * Capture screenshot and submit to CMS.
    *
-   * Strategy (best available):
+   * Strategy (best available, tried in order):
+   *  0. Electron IPC — webContents.capturePage() via preload bridge.
+   *     Pixel-perfect, captures video/WebGL/composited layers, zero DOM cost.
+   *     Only available when running inside the Electron shell.
    *  1. getDisplayMedia() — native pixel capture, works on Chrome with
    *     --auto-select-desktop-capture-source flag (kiosk). Pixel-perfect,
    *     includes video, composited layers, everything the GPU renders.
@@ -1163,19 +1166,20 @@ class PwaPlayer {
     try {
       let base64: string;
 
-      // Try native capture first (unless we already know it doesn't work)
-      if (this._screenshotMethod !== 'html2canvas') {
-        const nativeResult = await this.captureNative();
-        if (nativeResult) {
-          this._screenshotMethod = 'native';
-          base64 = nativeResult;
+      // Electron path: use native webContents.capturePage() via IPC
+      if (this._screenshotMethod === 'electron' ||
+          (this._screenshotMethod === null && (window as any).electronAPI?.captureScreenshot)) {
+        const electronResult = await (window as any).electronAPI.captureScreenshot();
+        if (electronResult) {
+          this._screenshotMethod = 'electron';
+          base64 = electronResult;
         } else {
-          this._screenshotMethod = 'html2canvas';
-          log.info('Native screen capture unavailable, using html2canvas');
-          base64 = await this.captureHtml2Canvas();
+          // Electron capture failed, fall through to browser methods
+          this._screenshotMethod = null;
+          base64 = await this.captureWithBrowserMethods();
         }
       } else {
-        base64 = await this.captureHtml2Canvas();
+        base64 = await this.captureWithBrowserMethods();
       }
 
       const success = await this.xmds.submitScreenShot(base64);
@@ -1189,6 +1193,23 @@ class PwaPlayer {
     } finally {
       this._screenshotInFlight = false;
     }
+  }
+
+  /**
+   * Capture screenshot using browser-native methods (non-Electron path)
+   */
+  private async captureWithBrowserMethods(): Promise<string> {
+    // Try native capture first (unless we already know it doesn't work)
+    if (this._screenshotMethod !== 'html2canvas') {
+      const nativeResult = await this.captureNative();
+      if (nativeResult) {
+        this._screenshotMethod = 'native';
+        return nativeResult;
+      }
+      this._screenshotMethod = 'html2canvas';
+      log.info('Native screen capture unavailable, using html2canvas');
+    }
+    return this.captureHtml2Canvas();
   }
 
   /**
