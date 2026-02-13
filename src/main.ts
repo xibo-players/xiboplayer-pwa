@@ -17,10 +17,14 @@ import { DownloadOverlay, getDefaultOverlayConfig } from './download-overlay.js'
 
 const log = createLogger('PWA');
 
+// Dynamic base path — same build serves /player/pwa/, /player/pwa-xmds/, /player/pwa-xlr/
+const PLAYER_BASE = new URL('./', window.location.href).pathname.replace(/\/$/, '');
+
 // Import core modules (will be loaded at runtime)
 let cacheManager: any;
 let scheduleManager: any;
 let config: any;
+let RestClient: any;
 let XmdsClient: any;
 let XmrWrapper: any;
 let cacheProxy: CacheProxy;
@@ -41,6 +45,9 @@ class PwaPlayer {
   private currentScheduleId: number = -1; // Track scheduleId for stats
   private preparingLayoutId: number | null = null; // Guard against concurrent prepareAndRenderLayout calls
   private _screenshotInterval: any = null;
+  private _screenshotMethod: 'native' | 'html2canvas' | null = null;
+  private _screenshotInFlight = false; // Concurrency guard — one capture at a time
+  private _html2canvasMod: any = null; // Pre-loaded module
   private _wakeLock: any = null; // Screen Wake Lock sentinel
 
   async init() {
@@ -52,10 +59,10 @@ class PwaPlayer {
     // Register Service Worker for offline-first kiosk mode
     if ('serviceWorker' in navigator) {
       try {
-        const registration = await navigator.serviceWorker.register(`/player/pwa/sw.js?v=${Date.now()}`, {
-          scope: '/player/pwa/',  // Scope matches SW location
-          type: 'module', // Enable ES6 module imports
-          updateViaCache: 'none'  // Don't cache sw.js - always fetch fresh
+        const registration = await navigator.serviceWorker.register(`${PLAYER_BASE}/sw-pwa.js?v=${Date.now()}`, {
+          scope: `${PLAYER_BASE}/`,
+          type: 'module',
+          updateViaCache: 'none'
         });
         log.info('Service Worker registered for offline mode:', registration.scope);
 
@@ -110,14 +117,14 @@ class PwaPlayer {
 
           // Return direct URL - Service Worker streams via Range requests
           // This eliminates blob creation delay and reduces memory usage!
-          const streamingUrl = `/player/pwa/cache/media/${fileId}`;
+          const streamingUrl = `${PLAYER_BASE}/cache/media/${fileId}`;
           log.debug(`Using streaming URL for media ${fileId}: ${streamingUrl}`);
           return streamingUrl;
         },
 
         // Provide widget HTML resolver
         getWidgetHtml: async (widget: any) => {
-          const cacheKey = `/player/pwa/cache/widget/${widget.layoutId}/${widget.regionId}/${widget.id}`;
+          const cacheKey = `${PLAYER_BASE}/cache/widget/${widget.layoutId}/${widget.regionId}/${widget.id}`;
           log.debug(`Looking for widget HTML at: ${cacheKey}`, widget);
 
           try {
@@ -249,6 +256,7 @@ class PwaPlayer {
       cacheManager = cacheModule.cacheManager;
       scheduleManager = scheduleModule.scheduleManager;
       config = configModule.config;
+      RestClient = xmdsModule.RestClient;
       XmdsClient = xmdsModule.XmdsClient;
       XmrWrapper = xmrModule.XmrWrapper;
       StatsCollector = statsModule.StatsCollector;
@@ -257,7 +265,27 @@ class PwaPlayer {
       formatLogs = statsModule.formatLogs;
       DisplaySettings = displaySettingsModule.DisplaySettings;
 
-      this.xmds = new XmdsClient(config);
+      // Transport auto-detection:
+      // - /player/pwa-xmds/ or ?transport=xmds → forced SOAP
+      // - Otherwise → try REST, fall back to SOAP if unavailable
+      const forceXmds = PLAYER_BASE.includes('pwa-xmds')
+        || new URLSearchParams(window.location.search).get('transport') === 'xmds';
+
+      if (forceXmds) {
+        log.info('Using XMDS/SOAP transport (forced)');
+        this.xmds = new XmdsClient(config);
+      } else {
+        // Try REST — registerDisplay() is always the first call anyway.
+        // If the CMS lacks /pwa/ REST endpoints, fall back to SOAP.
+        this.xmds = new RestClient(config);
+        try {
+          await this.xmds.registerDisplay();
+          log.info('Using REST transport');
+        } catch (e: any) {
+          log.warn('REST unavailable, falling back to XMDS/SOAP:', e.message);
+          this.xmds = new XmdsClient(config);
+        }
+      }
 
       // Initialize stats collector
       this.statsCollector = new StatsCollector();
@@ -331,6 +359,8 @@ class PwaPlayer {
 
     this.core.on('download-request', async (files: any[]) => {
       // Platform handles the actual download via CacheProxy
+      // Restart overlay polling while downloads are active
+      this.downloadOverlay?.startUpdating();
       try {
         await cacheProxy.requestDownload(files);
         log.info('Download request complete');
@@ -382,6 +412,14 @@ class PwaPlayer {
 
     this.core.on('xmr-connected', (url: string) => {
       log.info('XMR connected:', url);
+    });
+
+    this.core.on('xmr-misconfigured', (info: { reason: string; url?: string; message: string }) => {
+      log.warn(`XMR misconfigured (${info.reason}): ${info.message}`);
+      console.warn(
+        `%c[XMR] ${info.message}`,
+        'background: #ff9800; color: #000; padding: 4px 8px; font-weight: bold;'
+      );
     });
 
     // React to CMS log level changes — toggle download overlay at runtime
@@ -884,7 +922,7 @@ class PwaPlayer {
         if (!response) {
           // Must be chunked storage - get metadata for display
           const cache = await caches.open('xibo-media-v1');
-          const metadataResponse = await cache.match(`/player/pwa/cache/media/${mediaId}/metadata`);
+          const metadataResponse = await cache.match(`${PLAYER_BASE}/cache/media/${mediaId}/metadata`);
 
           if (metadataResponse) {
             const metadataText = await metadataResponse.text();
@@ -905,7 +943,7 @@ class PwaPlayer {
 
           // Delete bad cache entry
           const cache = await caches.open('xibo-media-v1');
-          const cacheKey = `/player/pwa/cache/media/${mediaId}`;
+          const cacheKey = `${PLAYER_BASE}/cache/media/${mediaId}`;
           await cache.delete(cacheKey);
 
           return false;
@@ -934,7 +972,7 @@ class PwaPlayer {
 
     const cache = await caches.open('xibo-static-v1');
     for (const filename of filenames) {
-      const cached = await cache.match(`/player/pwa/cache/static/${filename}`);
+      const cached = await cache.match(`${PLAYER_BASE}/cache/static/${filename}`);
       if (cached) {
         log.debug(`Widget dependency ${filename} already cached by SW`);
       } else {
@@ -1102,103 +1140,336 @@ class PwaPlayer {
   }
 
   /**
-   * Capture screenshot using html2canvas and submit to CMS
+   * Capture screenshot and submit to CMS.
+   *
+   * Strategy (best available):
+   *  1. getDisplayMedia() — native pixel capture, works on Chrome with
+   *     --auto-select-desktop-capture-source flag (kiosk). Pixel-perfect,
+   *     includes video, composited layers, everything the GPU renders.
+   *  2. html2canvas — fallback for Firefox or Chrome without the flag.
+   *     Re-renders the DOM to canvas; needs a video overlay workaround
+   *     because html2canvas can't read <video> pixels.
+   *
+   * The first successful method is cached for subsequent calls.
    */
   private async captureAndSubmitScreenshot() {
+    // Concurrency guard — skip if a capture is already in flight
+    if (this._screenshotInFlight) {
+      log.debug('Screenshot capture already in progress, skipping');
+      return;
+    }
+    this._screenshotInFlight = true;
+
     try {
-      const html2canvas = (await import('html2canvas')).default;
-      const container = document.getElementById('player-container');
-      if (!container) {
-        log.warn('No player container for screenshot');
-        return;
+      let base64: string;
+
+      // Try native capture first (unless we already know it doesn't work)
+      if (this._screenshotMethod !== 'html2canvas') {
+        const nativeResult = await this.captureNative();
+        if (nativeResult) {
+          this._screenshotMethod = 'native';
+          base64 = nativeResult;
+        } else {
+          this._screenshotMethod = 'html2canvas';
+          log.info('Native screen capture unavailable, using html2canvas');
+          base64 = await this.captureHtml2Canvas();
+        }
+      } else {
+        base64 = await this.captureHtml2Canvas();
       }
 
-      const scale = 0.5;
-      const cw = container.clientWidth;
-      const ch = container.clientHeight;
-
-      // Create master canvas at scaled resolution
-      const master = document.createElement('canvas');
-      master.width = Math.round(cw * scale);
-      master.height = Math.round(ch * scale);
-      const ctx = master.getContext('2d')!;
-
-      // Fill with layout background colour
-      ctx.fillStyle = container.style.backgroundColor || '#000';
-      ctx.fillRect(0, 0, master.width, master.height);
-
-      // Draw background image if set
-      const bgUrl = container.style.backgroundImage?.match(/url\("?(.+?)"?\)/)?.[1];
-      if (bgUrl) {
-        try {
-          const img = new Image();
-          img.crossOrigin = 'anonymous';
-          await new Promise<void>((resolve, reject) => {
-            img.onload = () => resolve();
-            img.onerror = reject;
-            img.src = bgUrl;
-          });
-          ctx.drawImage(img, 0, 0, master.width, master.height);
-        } catch (_) { /* background image failed, continue */ }
-      }
-
-      // Capture each region's iframe content and composite onto master canvas
-      const regionEls = container.querySelectorAll('.renderer-lite-region');
-      for (const regionEl of regionEls) {
-        const rect = (regionEl as HTMLElement).getBoundingClientRect();
-        const containerRect = container.getBoundingClientRect();
-        const x = (rect.left - containerRect.left) * scale;
-        const y = (rect.top - containerRect.top) * scale;
-        const w = rect.width * scale;
-        const h = rect.height * scale;
-
-        // Find visible widget (iframe or media element) in this region
-        const iframes = regionEl.querySelectorAll('iframe');
-        for (const iframe of iframes) {
-          if ((iframe as HTMLElement).style.visibility === 'hidden') continue;
-          try {
-            // Same-origin iframes (SW-cached widget HTML) can be captured
-            const iframeDoc = (iframe as HTMLIFrameElement).contentDocument;
-            if (iframeDoc?.body) {
-              const iframeCanvas = await html2canvas(iframeDoc.body, {
-                scale, useCORS: true, allowTaint: true, logging: false,
-                width: rect.width, height: rect.height
-              });
-              ctx.drawImage(iframeCanvas, x, y, w, h);
-            }
-          } catch (_) {
-            // Cross-origin iframe — can't capture, leave as background
-          }
-        }
-
-        // Capture media elements (images, videos) directly
-        const images = regionEl.querySelectorAll('img');
-        for (const img of images) {
-          if ((img as HTMLElement).style.visibility === 'hidden') continue;
-          try {
-            ctx.drawImage(img as HTMLImageElement, x, y, w, h);
-          } catch (_) { /* tainted canvas, skip */ }
-        }
-
-        const videos = regionEl.querySelectorAll('video');
-        for (const video of videos) {
-          if ((video as HTMLElement).style.visibility === 'hidden') continue;
-          try {
-            ctx.drawImage(video as HTMLVideoElement, x, y, w, h);
-          } catch (_) { /* tainted canvas, skip */ }
-        }
-      }
-
-      const base64 = master.toDataURL('image/jpeg', 0.7).split(',')[1];
       const success = await this.xmds.submitScreenShot(base64);
       if (success) {
-        log.info('Screenshot submitted successfully');
+        log.info(`Screenshot submitted (${this._screenshotMethod})`);
       } else {
         log.warn('Screenshot submission failed');
       }
     } catch (error) {
       log.error('Failed to capture screenshot:', error);
+    } finally {
+      this._screenshotInFlight = false;
     }
+  }
+
+  /**
+   * Native screen capture via getDisplayMedia().
+   * Works on Chrome/Chromium launched with:
+   *   --auto-select-desktop-capture-source="Entire screen"
+   * Returns base64 JPEG or null if unavailable.
+   */
+  private async captureNative(): Promise<string | null> {
+    if (!navigator.mediaDevices?.getDisplayMedia) return null;
+
+    let stream: MediaStream | null = null;
+    try {
+      stream = await navigator.mediaDevices.getDisplayMedia({
+        video: { displaySurface: 'browser' } as any,
+        audio: false,
+        // @ts-ignore — Chrome-specific hint to prefer current tab
+        preferCurrentTab: true,
+      });
+
+      const track = stream.getVideoTracks()[0];
+      // Use ImageCapture if available (Chrome), otherwise VideoFrame fallback
+      if (typeof ImageCapture !== 'undefined') {
+        const capture = new (ImageCapture as any)(track);
+        const bitmap = await (capture as any).grabFrame();
+        const canvas = document.createElement('canvas');
+        canvas.width = bitmap.width;
+        canvas.height = bitmap.height;
+        canvas.getContext('2d')!.drawImage(bitmap, 0, 0);
+        bitmap.close();
+        return canvas.toDataURL('image/jpeg', 0.8).split(',')[1];
+      }
+
+      // Fallback: draw video track to canvas
+      const video = document.createElement('video');
+      video.srcObject = stream;
+      video.muted = true;
+      await video.play();
+      // Wait one frame for the video to render
+      await new Promise(r => requestAnimationFrame(r));
+      const canvas = document.createElement('canvas');
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      canvas.getContext('2d')!.drawImage(video, 0, 0);
+      video.pause();
+      return canvas.toDataURL('image/jpeg', 0.8).split(',')[1];
+    } catch (_) {
+      // User denied, no auto-grant, or API unavailable
+      return null;
+    } finally {
+      // Always stop all tracks to release the capture
+      stream?.getTracks().forEach(t => t.stop());
+    }
+  }
+
+  /**
+   * Capture screenshot by manually composing a canvas from visible elements.
+   * - Images/video/canvas: drawn directly via ctx.drawImage() with object-fit emulation
+   * - Iframes: content cloned into main document, rendered via html2canvas
+   *   (html2canvas fails on cross-document elements, so we clone first)
+   * - Background: read from #player-container computed style
+   */
+  private async captureHtml2Canvas(): Promise<string> {
+    const canvas = document.createElement('canvas');
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+    const ctx = canvas.getContext('2d')!;
+
+    // Background: black (matches player default)
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    const container = document.getElementById('player-container');
+    if (!container) {
+      return canvas.toDataURL('image/jpeg', 0.8).split(',')[1];
+    }
+
+    // Draw container background (layout bgcolor + background image)
+    const containerRect = container.getBoundingClientRect();
+    const containerStyle = getComputedStyle(container);
+    const bgColor = containerStyle.backgroundColor;
+    if (bgColor && bgColor !== 'transparent' && bgColor !== 'rgba(0, 0, 0, 0)') {
+      ctx.fillStyle = bgColor;
+      ctx.fillRect(containerRect.left, containerRect.top, containerRect.width, containerRect.height);
+    }
+    // Background image (blob URL from layout XLF)
+    const bgImage = containerStyle.backgroundImage;
+    if (bgImage && bgImage !== 'none') {
+      const urlMatch = bgImage.match(/url\(["']?(.*?)["']?\)/);
+      if (urlMatch) {
+        try {
+          const bgImg = new Image();
+          bgImg.crossOrigin = 'anonymous';
+          await new Promise<void>((resolve) => {
+            bgImg.onload = () => resolve();
+            bgImg.onerror = () => resolve();
+            setTimeout(() => resolve(), 2000);
+            bgImg.src = urlMatch[1];
+          });
+          if (bgImg.naturalWidth) {
+            ctx.drawImage(bgImg, containerRect.left, containerRect.top, containerRect.width, containerRect.height);
+          }
+        } catch (_) { /* skip failed background */ }
+      }
+    }
+
+    // Ensure html2canvas is loaded (pre-loaded at init, fallback to lazy load)
+    if (!this._html2canvasMod) {
+      this._html2canvasMod = (await import('html2canvas')).default;
+    }
+
+    // Draw each visible widget element onto the canvas
+    const elements = container.querySelectorAll('img, video, iframe, canvas');
+    let drawn = 0;
+
+    for (const el of elements) {
+      const htmlEl = el as HTMLElement;
+      if (htmlEl.style.visibility === 'hidden') continue;
+      if (htmlEl.style.display === 'none') continue;
+      const rect = el.getBoundingClientRect();
+      if (rect.width === 0 || rect.height === 0) continue;
+
+      try {
+        if (el instanceof HTMLImageElement) {
+          if (!el.complete || !el.naturalWidth) continue;
+          // Emulate object-fit: contain — draw at correct aspect ratio within bounding rect
+          const fit = getComputedStyle(el).objectFit;
+          if (fit === 'contain' && el.naturalWidth && el.naturalHeight) {
+            const d = this.containedRect(el.naturalWidth, el.naturalHeight, rect);
+            ctx.drawImage(el, d.x, d.y, d.w, d.h);
+          } else {
+            ctx.drawImage(el, rect.left, rect.top, rect.width, rect.height);
+          }
+          drawn++;
+        } else if (el instanceof HTMLVideoElement) {
+          if (el.readyState < 2) continue;
+          // Emulate object-fit: contain — draw at correct aspect ratio within bounding rect
+          const fit = getComputedStyle(el).objectFit;
+          if (fit === 'contain' && el.videoWidth && el.videoHeight) {
+            const d = this.containedRect(el.videoWidth, el.videoHeight, rect);
+            ctx.drawImage(el, d.x, d.y, d.w, d.h);
+          } else {
+            ctx.drawImage(el, rect.left, rect.top, rect.width, rect.height);
+          }
+          drawn++;
+        } else if (el instanceof HTMLCanvasElement) {
+          ctx.drawImage(el, rect.left, rect.top, rect.width, rect.height);
+          drawn++;
+        } else if (el instanceof HTMLIFrameElement) {
+          const iDoc = el.contentDocument;
+          if (!iDoc?.body) continue;
+
+          // html2canvas fails on cross-document elements (produces transparent canvas).
+          // Clone the iframe's styles + content into the main document first,
+          // then run html2canvas on the clone in the main document context.
+          const captureDiv = document.createElement('div');
+          captureDiv.style.cssText = `position:fixed;left:-9999px;top:0;width:${rect.width}px;height:${rect.height}px;overflow:hidden;`;
+
+          // Clone stylesheets with absolute URLs (iframe base may differ)
+          const linkPromises: Promise<void>[] = [];
+          for (const styleEl of iDoc.querySelectorAll('style')) {
+            captureDiv.appendChild(styleEl.cloneNode(true));
+          }
+          for (const linkEl of iDoc.querySelectorAll('link[rel="stylesheet"]')) {
+            const newLink = document.createElement('link');
+            newLink.rel = 'stylesheet';
+            newLink.href = new URL(linkEl.getAttribute('href') || '', iDoc.baseURI).href;
+            captureDiv.appendChild(newLink);
+            // Wait for each stylesheet to load (or fail) instead of arbitrary delay
+            linkPromises.push(new Promise<void>(resolve => {
+              newLink.onload = () => resolve();
+              newLink.onerror = () => resolve();
+            }));
+          }
+
+          // Clone body content
+          captureDiv.appendChild(iDoc.body.cloneNode(true));
+          document.body.appendChild(captureDiv);
+
+          // Collect natural dimensions from ORIGINAL iframe images (before html2canvas clones).
+          // html2canvas doesn't support object-fit, so we fix sizing in onclone.
+          const origImgs = iDoc.querySelectorAll('img');
+          const imgNaturals = new Map<string, { nw: number; nh: number }>();
+          origImgs.forEach((img, i) => {
+            if (img.naturalWidth && img.naturalHeight) {
+              imgNaturals.set(String(i), { nw: img.naturalWidth, nh: img.naturalHeight });
+            }
+          });
+
+          // Wait for stylesheets to load (with 500ms safety timeout)
+          if (linkPromises.length > 0) {
+            await Promise.race([
+              Promise.all(linkPromises),
+              new Promise(r => setTimeout(r, 500)),
+            ]);
+          }
+
+          const iframeCanvas = await this._html2canvasMod(captureDiv, {
+            useCORS: true, allowTaint: true, logging: false,
+            backgroundColor: null,
+            width: rect.width, height: rect.height,
+            onclone: (clonedDoc: Document) => {
+              // Force visible — widget CSS animations reset to opacity:0 in cloned DOM
+              const s = clonedDoc.createElement('style');
+              s.textContent = '*, *::before, *::after { animation: none !important; transition: none !important; opacity: 1 !important; }';
+              clonedDoc.head.appendChild(s);
+
+              // Fix object-fit: contain — html2canvas stretches images, ignoring object-fit.
+              // Replace with explicit sizing + centering so html2canvas draws correct proportions.
+              const clonedImgs = clonedDoc.querySelectorAll('img');
+              clonedImgs.forEach((cImg, i) => {
+                const style = clonedDoc.defaultView?.getComputedStyle(cImg);
+                if (!style || style.objectFit !== 'contain') return;
+                const dims = imgNaturals.get(String(i));
+                if (!dims) return;
+
+                const cW = cImg.clientWidth || parseFloat(style.width) || 0;
+                const cH = cImg.clientHeight || parseFloat(style.height) || 0;
+                if (!cW || !cH) return;
+
+                const srcAspect = dims.nw / dims.nh;
+                const dstAspect = cW / cH;
+                let drawW: number, drawH: number;
+                if (srcAspect > dstAspect) {
+                  drawW = cW;
+                  drawH = cW / srcAspect;
+                } else {
+                  drawH = cH;
+                  drawW = cH * srcAspect;
+                }
+
+                // Wrap in a flex container to center, remove object-fit
+                const wrapper = clonedDoc.createElement('div');
+                wrapper.style.cssText = `width:${cW}px;height:${cH}px;display:flex;align-items:center;justify-content:center;overflow:hidden;`;
+                cImg.style.objectFit = 'fill';
+                cImg.style.width = `${drawW}px`;
+                cImg.style.height = `${drawH}px`;
+                cImg.parentNode?.insertBefore(wrapper, cImg);
+                wrapper.appendChild(cImg);
+              });
+            },
+          });
+
+          document.body.removeChild(captureDiv);
+          ctx.drawImage(iframeCanvas, rect.left, rect.top, rect.width, rect.height);
+          drawn++;
+        }
+      } catch (e: any) {
+        log.warn('Screenshot: failed to draw element', el.tagName, e);
+      }
+    }
+
+    log.debug(`Screenshot: composed ${drawn}/${elements.length} elements`);
+    return canvas.toDataURL('image/jpeg', 0.8).split(',')[1];
+  }
+
+  /**
+   * Calculate the destination rect for object-fit: contain.
+   * Returns the centered rect that preserves the source aspect ratio
+   * within the bounding rect (letterbox/pillarbox).
+   */
+  private containedRect(
+    srcW: number, srcH: number, rect: DOMRect
+  ): { x: number; y: number; w: number; h: number } {
+    const srcAspect = srcW / srcH;
+    const dstAspect = rect.width / rect.height;
+    let w: number, h: number;
+    if (srcAspect > dstAspect) {
+      // Source is wider — fit to width, letterbox top/bottom
+      w = rect.width;
+      h = rect.width / srcAspect;
+    } else {
+      // Source is taller — fit to height, pillarbox left/right
+      h = rect.height;
+      w = rect.height * srcAspect;
+    }
+    return {
+      x: rect.left + (rect.width - w) / 2,
+      y: rect.top + (rect.height - h) / 2,
+      w, h,
+    };
   }
 
   /**
@@ -1207,6 +1478,11 @@ class PwaPlayer {
   private startScreenshotInterval() {
     const intervalSecs = this.displaySettings?.getSetting('screenshotInterval') || 0;
     if (!intervalSecs || intervalSecs <= 0) return;
+
+    // Pre-load html2canvas module so first capture is instant
+    if (!this._html2canvasMod) {
+      import('html2canvas').then(m => { this._html2canvasMod = m.default; });
+    }
 
     const intervalMs = intervalSecs * 1000;
     log.info(`Starting periodic screenshots every ${intervalSecs}s`);
