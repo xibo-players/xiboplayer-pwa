@@ -169,8 +169,17 @@ class PwaPlayer {
     this.setupServiceWorkerEventHandlers();
     this.setupInteractiveControl();
 
-    // Start watching GPS location for geo-fenced schedules
-    this.startGeolocationWatch();
+    // Set display location from CMS settings when registration completes
+    this.core.on('register-complete', (regResult: any) => {
+      const lat = parseFloat(regResult?.settings?.latitude);
+      const lng = parseFloat(regResult?.settings?.longitude);
+      if (lat && lng && !isNaN(lat) && !isNaN(lng)) {
+        log.info(`Display location from CMS: ${lat.toFixed(4)}, ${lng.toFixed(4)}`);
+        if (scheduleManager?.setLocation) {
+          scheduleManager.setLocation(lat, lng);
+        }
+      }
+    });
 
     // Setup UI
     this.setupUI();
@@ -531,33 +540,6 @@ class PwaPlayer {
     });
   }
 
-  /**
-   * Start watching GPS location for geo-fenced schedules.
-   * Updates ScheduleManager with current coordinates so geo-fenced
-   * layouts/overlays can be filtered based on player position.
-   */
-  private startGeolocationWatch() {
-    if (!navigator.geolocation) {
-      log.info('Geolocation API not available');
-      return;
-    }
-
-    navigator.geolocation.watchPosition(
-      (position) => {
-        const { latitude, longitude } = position.coords;
-        log.debug(`GPS location: ${latitude.toFixed(4)}, ${longitude.toFixed(4)}`);
-        // Update schedule manager so geo-fenced items are evaluated
-        if (scheduleManager?.setLocation) {
-          scheduleManager.setLocation(latitude, longitude);
-        }
-      },
-      (error) => {
-        log.debug(`Geolocation error (${error.code}): ${error.message}`);
-        // Not critical — geo-fenced items will show by default when location unknown
-      },
-      { enableHighAccuracy: false, maximumAge: 300000, timeout: 10000 }
-    );
-  }
 
   /**
    * Setup Interactive Control handler (receives messages from SW for widget IC requests)
