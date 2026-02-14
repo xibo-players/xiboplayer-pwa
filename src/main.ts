@@ -393,6 +393,15 @@ class PwaPlayer {
         this.currentScheduleId = parseInt(schedule.campaigns[0].scheduleid) || -1;
       }
 
+      // Clear preloaded (warm) layouts from pool when schedule changes
+      // The warm entries may no longer be valid for the new schedule
+      if (this.renderer?.layoutPool) {
+        const cleared = this.renderer.layoutPool.clearWarm();
+        if (cleared > 0) {
+          log.info(`Cleared ${cleared} preloaded layout(s) on schedule change`);
+        }
+      }
+
       log.debug('Current scheduleId for stats:', this.currentScheduleId);
     });
 
@@ -806,6 +815,67 @@ class PwaPlayer {
 
         default:
           log.warn('Unknown action type:', actionType);
+      }
+    });
+
+    // Handle next layout preload request from renderer
+    // Fired at 75% of current layout duration to pre-build the next layout's DOM
+    this.renderer.on('request-next-layout-preload', async () => {
+      try {
+        // Peek at the next layout without advancing the schedule index
+        const next = this.core.peekNextLayout();
+        if (!next) {
+          log.debug('No next layout to preload (single layout schedule or same layout)');
+          return;
+        }
+
+        const nextLayoutId = next.layoutId;
+
+        // Skip if already preloaded
+        if (this.renderer.layoutPool.has(nextLayoutId)) {
+          log.debug(`Layout ${nextLayoutId} already in preload pool`);
+          return;
+        }
+
+        log.info(`Preloading next layout ${nextLayoutId}...`);
+
+        // Get XLF from cache
+        const xlfBlob = await cacheManager.getCachedFile('layout', nextLayoutId);
+        if (!xlfBlob) {
+          log.debug(`Layout ${nextLayoutId} XLF not cached, skipping preload`);
+          return;
+        }
+
+        const xlfXml = await xlfBlob.text();
+
+        // Check if all required media is cached
+        const requiredMedia = await this.getRequiredMediaIds(xlfXml);
+        const videoMediaIds = this.getVideoMediaIds(xlfXml);
+        const allMediaCached = await this.checkAllMediaCached(requiredMedia, videoMediaIds);
+
+        if (!allMediaCached) {
+          log.debug(`Media not fully cached for layout ${nextLayoutId}, skipping preload`);
+          return;
+        }
+
+        // Fetch widget HTML before preloading (same as prepareAndRenderLayout)
+        await this.fetchWidgetHtml(xlfXml, nextLayoutId);
+
+        // Pre-warm video chunks in SW BlobCache
+        if (videoMediaIds.length > 0) {
+          await cacheProxy.prewarmVideoChunks(videoMediaIds);
+        }
+
+        // Preload the layout into the renderer's pool
+        const success = await this.renderer.preloadLayout(xlfXml, nextLayoutId);
+        if (success) {
+          log.info(`Layout ${nextLayoutId} preloaded successfully`);
+        } else {
+          log.warn(`Layout ${nextLayoutId} preload failed (will fall back to normal render)`);
+        }
+      } catch (error) {
+        log.warn('Layout preload failed (non-blocking):', error);
+        // Non-blocking: preload failure is graceful, normal render path will be used
       }
     });
   }
