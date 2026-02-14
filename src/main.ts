@@ -831,7 +831,8 @@ class PwaPlayer {
 
       // Check if all required media is cached
       const requiredMedia = await this.getRequiredMediaIds(xlfXml);
-      const allMediaCached = await this.checkAllMediaCached(requiredMedia);
+      const videoMediaIds = this.getVideoMediaIds(xlfXml);
+      const allMediaCached = await this.checkAllMediaCached(requiredMedia, videoMediaIds);
 
       if (!allMediaCached) {
         // Tell SW to prioritize this layout's media over other downloads.
@@ -852,6 +853,12 @@ class PwaPlayer {
 
       // Fetch widget HTML for all widgets in the layout
       await this.fetchWidgetHtml(xlfXml, layoutId);
+
+      // Pre-warm video chunks in SW BlobCache (first + last chunks for moov atom)
+      if (videoMediaIds.length > 0) {
+        log.info(`Pre-warming ${videoMediaIds.length} video file(s) for layout ${layoutId}`);
+        await cacheProxy.prewarmVideoChunks(videoMediaIds);
+      }
 
       // Render layout
       await this.renderer.renderLayout(xlfXml, layoutId);
@@ -902,9 +909,27 @@ class PwaPlayer {
   }
 
   /**
+   * Get media file IDs for video widgets in the layout XLF
+   */
+  private getVideoMediaIds(xlfXml: string): number[] {
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(xlfXml, 'text/xml');
+    const videoIds: number[] = [];
+
+    doc.querySelectorAll('media[type="video"]').forEach(el => {
+      const fileId = el.getAttribute('fileId');
+      if (fileId) {
+        videoIds.push(parseInt(fileId, 10));
+      }
+    });
+
+    return videoIds;
+  }
+
+  /**
    * Check if all required media files are cached and ready
    */
-  private async checkAllMediaCached(mediaIds: number[]): Promise<boolean> {
+  private async checkAllMediaCached(mediaIds: number[], videoMediaIds: number[] = []): Promise<boolean> {
     for (const mediaId of mediaIds) {
       try {
         // Use CacheProxy API - it delegates to SW's CacheManager.fileExists()
@@ -920,7 +945,7 @@ class PwaPlayer {
         const response = await cacheManager.getCachedResponse('media', mediaId);
 
         if (!response) {
-          // Must be chunked storage - get metadata for display
+          // Chunked storage - check readiness based on file type
           const cache = await caches.open('xibo-media-v1');
           const metadataResponse = await cache.match(`${PLAYER_BASE}/cache/media/${mediaId}/metadata`);
 
@@ -928,7 +953,36 @@ class PwaPlayer {
             const metadataText = await metadataResponse.text();
             const metadata = JSON.parse(metadataText);
             const sizeMB = (metadata.totalSize / 1024 / 1024).toFixed(1);
-            log.debug(`Media ${mediaId} cached as chunks (${metadata.numChunks} x ${(metadata.chunkSize / 1024 / 1024).toFixed(0)} MB = ${sizeMB} MB total)`);
+            const isVideo = videoMediaIds.includes(mediaId);
+
+            if (isVideo) {
+              // Video: early playback — need chunk 0 (ftyp header) + last chunk (moov atom).
+              // Download manager prioritizes these two chunks first (out-of-order download).
+              // SW's Range handler retries up to 60s per chunk for middle ones still downloading.
+              const chunk0 = await cache.match(`${PLAYER_BASE}/cache/media/${mediaId}/chunk-0`);
+              if (!chunk0) {
+                log.debug(`Media ${mediaId} video: chunk 0 not yet available`);
+                return false;
+              }
+              const lastIdx = metadata.numChunks - 1;
+              if (lastIdx > 0) {
+                const lastChunk = await cache.match(`${PLAYER_BASE}/cache/media/${mediaId}/chunk-${lastIdx}`);
+                if (!lastChunk) {
+                  log.debug(`Media ${mediaId} video: last chunk (${lastIdx}) not yet available`);
+                  return false;
+                }
+              }
+              log.info(`Media ${mediaId} video ready for early playback (chunk 0 + ${lastIdx} of ${metadata.numChunks}, ${sizeMB} MB total)`);
+            } else {
+              // Non-video: require all chunks (last chunk present = all downloaded)
+              const lastChunkKey = `${PLAYER_BASE}/cache/media/${mediaId}/chunk-${metadata.numChunks - 1}`;
+              const lastChunk = await cache.match(lastChunkKey);
+              if (!lastChunk) {
+                log.debug(`Media ${mediaId} chunked but still downloading (chunk ${metadata.numChunks - 1} missing)`);
+                return false;
+              }
+              log.debug(`Media ${mediaId} cached as chunks (${metadata.numChunks} x ${(metadata.chunkSize / 1024 / 1024).toFixed(0)} MB = ${sizeMB} MB total)`);
+            }
             continue;
           }
         }

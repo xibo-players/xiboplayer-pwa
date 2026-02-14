@@ -1095,6 +1095,9 @@ class MessageHandler {
       case 'DELETE_FILES':
         return await this.handleDeleteFiles(data.files);
 
+      case 'PREWARM_VIDEO_CHUNKS':
+        return await this.handlePrewarmVideoChunks(data.mediaIds);
+
       default:
         this.log.warn('Unknown message type:', type);
         return { success: false, error: 'Unknown message type' };
@@ -1126,9 +1129,50 @@ class MessageHandler {
   }
 
   /**
-   * Handle DOWNLOAD_FILES message
-   * Enqueue all files for download and wait for them to START
+   * Handle PREWARM_VIDEO_CHUNKS - pre-load first and last chunks into BlobCache
+   * for faster video startup (avoids IndexedDB reads on initial Range requests)
    */
+  async handlePrewarmVideoChunks(mediaIds) {
+    if (!mediaIds || !Array.isArray(mediaIds) || mediaIds.length === 0) {
+      return { success: false, error: 'No mediaIds provided' };
+    }
+
+    let warmed = 0;
+    for (const mediaId of mediaIds) {
+      const cacheKey = `${BASE}/cache/media/${mediaId}`;
+      const metadata = await this.cacheManager.getMetadata(cacheKey);
+
+      if (metadata?.chunked) {
+        // Chunked file: pre-warm first chunk (ftyp/mdat) and last chunk (moov atom)
+        const lastChunk = metadata.numChunks - 1;
+        const chunksToWarm = [0];
+        if (lastChunk > 0) chunksToWarm.push(lastChunk);
+
+        for (const idx of chunksToWarm) {
+          const chunkKey = `${cacheKey}/chunk-${idx}`;
+          // Load into BlobCache (no-op if already cached)
+          await blobCache.get(chunkKey, async () => {
+            const resp = await this.cacheManager.getChunk(cacheKey, idx);
+            if (!resp) return new Blob(); // shouldn't happen for cached media
+            return await resp.blob();
+          });
+        }
+        this.log.info(`Pre-warmed ${chunksToWarm.length} chunks for media ${mediaId} (${metadata.numChunks} total)`);
+        warmed++;
+      } else {
+        // Whole file: pre-warm entire blob
+        const cached = await this.cacheManager.get(cacheKey);
+        if (cached) {
+          await blobCache.get(cacheKey, async () => await cached.clone().blob());
+          this.log.info(`Pre-warmed whole file for media ${mediaId}`);
+          warmed++;
+        }
+      }
+    }
+
+    return { success: true, warmed, total: mediaIds.length };
+  }
+
   /**
    * Handle PRIORITIZE_DOWNLOAD - move file to front of download queue
    */
@@ -1311,23 +1355,31 @@ class MessageHandler {
         log.info(`Progressive: chunk ${chunksStored}/${totalChunks} cached for ${fileInfo.id}`);
       }
 
-      // Notify client when chunk 0 is cached — video needs byte 0 to start streaming.
-      // With parallel chunk downloads, chunk 0 may not be the first to arrive.
-      if (!clientNotified && chunkIndex === 0) {
-        clientNotified = true;
-        const clients = await self.clients.matchAll();
-        clients.forEach(client => {
-          client.postMessage({
-            type: 'FILE_CACHED',
-            fileId: fileInfo.id,
-            fileType: fileInfo.type,
-            size: fileSize,
-            progressive: true,
-            chunksReady: chunksStored,
-            totalChunks
+      // Notify client when key chunks arrive for early playback:
+      // - chunk 0: ftyp/mdat header (first bytes of file)
+      // - last chunk: moov atom (MP4 structure, needed by browser before playback)
+      // Download manager sends these two first (out-of-order priority).
+      if (!clientNotified && (chunkIndex === 0 || chunkIndex === totalChunks - 1)) {
+        // Only notify once both chunk 0 AND last chunk are stored
+        const hasChunk0 = chunkIndex === 0 || await this.cacheManager.getChunk(cacheKey, 0);
+        const hasLastChunk = chunkIndex === totalChunks - 1 || await this.cacheManager.getChunk(cacheKey, totalChunks - 1);
+
+        if (hasChunk0 && hasLastChunk) {
+          clientNotified = true;
+          const clients = await self.clients.matchAll();
+          clients.forEach(client => {
+            client.postMessage({
+              type: 'FILE_CACHED',
+              fileId: fileInfo.id,
+              fileType: fileInfo.type,
+              size: fileSize,
+              progressive: true,
+              chunksReady: chunksStored,
+              totalChunks
+            });
           });
-        });
-        log.info('First chunk cached — client notified, streaming can begin:', cacheKey);
+          log.info('Chunk 0 + last chunk cached — client notified, early playback ready:', cacheKey);
+        }
       }
 
       // Update metadata with actual chunk count if it differs (edge case)
