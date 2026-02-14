@@ -169,6 +169,9 @@ class PwaPlayer {
     this.setupServiceWorkerEventHandlers();
     this.setupInteractiveControl();
 
+    // Start watching GPS location for geo-fenced schedules
+    this.startGeolocationWatch();
+
     // Setup UI
     this.setupUI();
 
@@ -526,6 +529,34 @@ class PwaPlayer {
     this.core.on('check-pending-layout', async (layoutId: number) => {
       await this.prepareAndRenderLayout(layoutId);
     });
+  }
+
+  /**
+   * Start watching GPS location for geo-fenced schedules.
+   * Updates ScheduleManager with current coordinates so geo-fenced
+   * layouts/overlays can be filtered based on player position.
+   */
+  private startGeolocationWatch() {
+    if (!navigator.geolocation) {
+      log.info('Geolocation API not available');
+      return;
+    }
+
+    navigator.geolocation.watchPosition(
+      (position) => {
+        const { latitude, longitude } = position.coords;
+        log.debug(`GPS location: ${latitude.toFixed(4)}, ${longitude.toFixed(4)}`);
+        // Update schedule manager so geo-fenced items are evaluated
+        if (scheduleManager?.setLocation) {
+          scheduleManager.setLocation(latitude, longitude);
+        }
+      },
+      (error) => {
+        log.debug(`Geolocation error (${error.code}): ${error.message}`);
+        // Not critical — geo-fenced items will show by default when location unknown
+      },
+      { enableHighAccuracy: false, maximumAge: 300000, timeout: 10000 }
+    );
   }
 
   /**
