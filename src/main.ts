@@ -393,12 +393,31 @@ class PwaPlayer {
         this.currentScheduleId = parseInt(schedule.campaigns[0].scheduleid) || -1;
       }
 
-      // Clear preloaded (warm) layouts from pool when schedule changes
-      // The warm entries may no longer be valid for the new schedule
+      // Selectively clear preloaded layouts not in the new schedule.
+      // Keep warm entries whose layout ID is still scheduled — their DOM is still valid.
+      // (The CMS schedule CRC changes every collection due to timestamps, even when
+      // the actual layout list hasn't changed. Blindly clearing would destroy preloads.)
       if (this.renderer?.layoutPool) {
-        const cleared = this.renderer.layoutPool.clearWarm();
+        const scheduledIds = new Set<number>();
+        if (schedule.layouts) {
+          for (const l of schedule.layouts) {
+            const id = parseInt(String(l.file || l.id || l).replace('.xlf', ''), 10);
+            if (id) scheduledIds.add(id);
+          }
+        }
+        if (schedule.campaigns) {
+          for (const c of schedule.campaigns) {
+            if (c.layouts) {
+              for (const l of c.layouts) {
+                const id = parseInt(String(l.file || l.id || l).replace('.xlf', ''), 10);
+                if (id) scheduledIds.add(id);
+              }
+            }
+          }
+        }
+        const cleared = this.renderer.layoutPool.clearWarmNotIn(scheduledIds);
         if (cleared > 0) {
-          log.info(`Cleared ${cleared} preloaded layout(s) on schedule change`);
+          log.info(`Cleared ${cleared} preloaded layout(s) no longer in schedule`);
         }
       }
 
@@ -1311,9 +1330,12 @@ class PwaPlayer {
           this._screenshotMethod = 'electron';
           base64 = electronResult;
         } else {
-          // Electron capture failed, fall through to browser methods
-          this._screenshotMethod = null;
-          base64 = await this.captureWithBrowserMethods();
+          // Electron capture returned null (window not yet painted).
+          // Do NOT fall through to getDisplayMedia — it triggers a
+          // permission dialog that blocks the whole UI.  Skip this
+          // cycle; capturePage() will succeed on the next interval.
+          log.debug('Electron screenshot not ready yet, will retry next interval');
+          return;
         }
       } else {
         base64 = await this.captureWithBrowserMethods();
