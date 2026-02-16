@@ -1218,7 +1218,7 @@ class PwaPlayer {
   private updateConfigDisplay() {
     const configEl = document.getElementById('config-info');
     if (configEl) {
-      configEl.textContent = `CMS: ${config.cmsAddress} | Display: ${config.displayName || config.hardwareKey} | Mode: Lite+Core`;
+      configEl.textContent = `CMS: ${config.cmsAddress} | Display: ${config.displayName || 'Unknown'} | HW: ${config.hardwareKey}`;
     }
   }
 
