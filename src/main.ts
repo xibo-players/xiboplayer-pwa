@@ -277,6 +277,16 @@ class PwaPlayer {
       formatLogs = statsModule.formatLogs;
       DisplaySettings = displaySettingsModule.DisplaySettings;
 
+      // Get MAC address from Electron if available (for WOL support)
+      if ((window as any).electronAPI?.getSystemInfo) {
+        try {
+          const sysInfo = await (window as any).electronAPI.getSystemInfo();
+          if (sysInfo.macAddress) {
+            config.macAddress = sysInfo.macAddress;
+          }
+        } catch (_) { /* pure PWA — no Electron API */ }
+      }
+
       // Transport auto-detection:
       // - /player/pwa-xmds/ or ?transport=xmds → forced SOAP
       // - Otherwise → try REST, fall back to SOAP if unavailable
