@@ -33,6 +33,6 @@
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/linuxnow/xiboplayer-pwa.git"
+    "url": "git+https://github.com/xibo-players/xiboplayer-pwa.git"
   }
 }
