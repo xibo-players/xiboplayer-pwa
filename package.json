@@ -1,5 +1,5 @@
 {
-  "name": "@tecman/xibo-player-pwa",
+  "name": "@xiboplayer/pwa",
   "version": "0.1.0",
   "description": "Lightweight PWA Xibo Player with RendererLite",
   "type": "module",
@@ -10,15 +10,15 @@
     "type-check": "tsc --noEmit"
   },
   "dependencies": {
-    "@xiboplayer/utils": "file:../../packages/utils",
-    "@xiboplayer/cache": "file:../../packages/cache",
-    "@xiboplayer/renderer": "file:../../packages/renderer",
-    "@xiboplayer/schedule": "file:../../packages/schedule",
-    "@xiboplayer/xmds": "file:../../packages/xmds",
-    "@xiboplayer/xmr": "file:../../packages/xmr",
-    "@xiboplayer/core": "file:../../packages/core",
-    "@xiboplayer/stats": "file:../../packages/stats",
-    "@xiboplayer/settings": "file:../../packages/settings",
+    "@xiboplayer/utils": "^0.1.0",
+    "@xiboplayer/cache": "^0.1.0",
+    "@xiboplayer/renderer": "^0.1.0",
+    "@xiboplayer/schedule": "^0.1.0",
+    "@xiboplayer/xmds": "^0.1.0",
+    "@xiboplayer/xmr": "^0.1.0",
+    "@xiboplayer/core": "^0.1.0",
+    "@xiboplayer/stats": "^0.1.0",
+    "@xiboplayer/settings": "^0.1.0",
     "xml2js": "^0.6.2",
     "nanoevents": "^9.0.0",
     "html2canvas": "^1.4.1"
@@ -29,6 +29,10 @@
     "@types/xml2js": "^0.4.14",
     "@types/node": "^22.10.5"
   },
-  "author": "TecMan",
-  "license": "Apache-2.0"
+  "author": "TecMan <pau@tecman.cat>",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/linuxnow/xiboplayer-pwa.git"
+  }
 }
