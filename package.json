@@ -29,7 +29,7 @@
     "@types/xml2js": "^0.4.14",
     "@types/node": "^22.10.5"
   },
-  "author": "TecMan <pau@tecman.cat>",
+  "author": "Pau Aliagas <linuxnow@gmail.com>",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
