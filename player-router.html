@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Xibo PWA Player</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 20px;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+    }
+    .container {
+      text-align: center;
+      max-width: 600px;
+    }
+    h1 {
+      font-size: 2.5rem;
+      margin-bottom: 1rem;
+    }
+    .loader {
+      width: 50px;
+      height: 50px;
+      border: 4px solid rgba(255,255,255,0.3);
+      border-top-color: white;
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+      margin: 2rem auto;
+    }
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+    .info {
+      opacity: 0.9;
+      margin-top: 2rem;
+    }
+    .variant {
+      background: rgba(255,255,255,0.2);
+      padding: 1rem;
+      border-radius: 8px;
+      margin-top: 1rem;
+    }
+  </style>
+  <script>
+    /**
+     * Smart Player Router
+     *
+     * Routing Logic:
+     * 1. Check URL param: ?variant=pwa|xlr
+     * 2. Check localStorage preference
+     * 3. Detect device capabilities
+     * 4. Default to Core PWA (modern, modular)
+     */
+    (function() {
+      const params = new URLSearchParams(window.location.search);
+      const variant = params.get('variant');
+
+      // Store preference if explicitly chosen
+      if (variant) {
+        localStorage.setItem('player_variant', variant);
+      }
+
+      function getPlayerVariant() {
+        // 1. Explicit URL parameter
+        const validVariants = ['pwa', 'pwa-xmds', 'pwa-xlr'];
+        if (validVariants.includes(variant)) {
+          return variant;
+        }
+
+        // 2. Stored preference
+        const stored = localStorage.getItem('player_variant');
+        if (['pwa', 'pwa-xmds', 'pwa-xlr'].includes(stored)) {
+          return stored;
+        }
+
+        // 3. Device capabilities detection
+        const ua = navigator.userAgent.toLowerCase();
+
+        // Use XLR renderer for legacy compatibility if needed
+        if (isLegacyDevice(ua)) {
+          return 'pwa-xlr';
+        }
+
+        // 4. Default to PWA (modular, optimized)
+        return 'pwa';
+      }
+
+      function isLegacyDevice(ua) {
+        // Detect devices that need XLR for legacy compatibility
+        // Most devices should use the modern Core PWA
+
+        // Only use XLR for specific legacy cases
+        // Most modern devices should use Core PWA (default)
+
+        // Explicitly request XLR via query param if needed
+        // Example: ?variant=xlr
+
+        // For now, default to Core PWA for all devices
+        return false;
+      }
+
+      function redirect() {
+        const chosen = getPlayerVariant();
+        // Variant name matches deployment path directly
+        const baseUrl = window.location.origin + '/player/' + chosen + '/';
+        const fullUrl = baseUrl + window.location.search;
+
+        console.log('[Player Router] Redirecting to:', chosen, fullUrl);
+
+        // Update UI before redirect
+        document.getElementById('variant').textContent = chosen.toUpperCase();
+        document.getElementById('reason').textContent = getRedirectReason(chosen);
+
+        // Redirect after brief delay
+        setTimeout(() => {
+          window.location.replace(fullUrl);
+        }, 500);
+      }
+
+      function getRedirectReason(variant) {
+        if (params.get('variant')) {
+          return 'Explicit selection via URL';
+        }
+        if (localStorage.getItem('player_variant')) {
+          return 'Your saved preference';
+        }
+        if (variant === 'pwa-xlr') {
+          return 'XLR renderer mode';
+        }
+        if (variant === 'pwa-xmds') {
+          return 'SOAP/XMDS transport mode';
+        }
+        return 'Modern PWA (default)';
+      }
+
+      // Run on load
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', redirect);
+      } else {
+        redirect();
+      }
+    })();
+  </script>
+</head>
+<body>
+  <div class="container">
+    <h1>🎬 Xibo PWA Player</h1>
+    <div class="loader"></div>
+    <div class="info">
+      <p>Loading player variant...</p>
+      <div class="variant">
+        <strong>Variant:</strong> <span id="variant">Detecting...</span><br>
+        <strong>Reason:</strong> <span id="reason">Analyzing device...</span>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
