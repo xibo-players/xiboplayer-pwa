@@ -21,9 +21,6 @@ export default defineConfig({
           }
           return 'assets/[name]-[hash].js';
         },
-        manualChunks: {
-          'xlr': ['@xibosignage/xibo-layout-renderer'],
-        },
       },
     },
   },

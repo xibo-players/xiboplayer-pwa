@@ -3,7 +3,7 @@
  * Version: 2026-02-07 - Refactored to use shared DownloadManager module
  *
  * Architecture:
- * - DownloadManager: Imported from @tecman/xibo-player-core (shared module)
+ * - DownloadManager: Imported from @xiboplayer/cache
  * - CacheManager: Wraps Cache API with type-aware keys
  * - RequestHandler: Handles fetch events (serve from cache or wait for download)
  * - MessageHandler: Handles postMessage from client
@@ -11,7 +11,7 @@
  * No HTTP 202 responses - always returns actual files or 404
  */
 
-import { DownloadManager } from '../../../packages/cache/src/download-manager.js';
+import { DownloadManager } from '@xiboplayer/cache';
 import {
   formatBytes,
   parseRangeHeader,
