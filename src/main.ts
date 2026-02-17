@@ -15,6 +15,8 @@ import { PlayerCore } from '@xiboplayer/core';
 import { createLogger, isDebug, registerLogSink } from '@xiboplayer/utils';
 import { DownloadOverlay, getDefaultOverlayConfig } from './download-overlay.js';
 
+declare const __APP_VERSION__: string;
+
 const log = createLogger('PWA');
 
 // Dynamic base path — same build serves /player/pwa/, /player/pwa-xmds/, /player/pwa-xlr/
@@ -182,7 +184,7 @@ class PwaPlayer {
     });
 
     // Setup UI
-    this.setupUI();
+    this.updateConfigDisplay();
 
     // Online/offline event listeners for seamless offline mode
     window.addEventListener('online', () => {
@@ -202,7 +204,7 @@ class PwaPlayer {
     // Initialize download progress overlay (configurable debug feature)
     const overlayConfig = getDefaultOverlayConfig();
     if (overlayConfig.enabled) {
-      this.downloadOverlay = new DownloadOverlay(overlayConfig, cacheProxy);
+      this.downloadOverlay = new DownloadOverlay(overlayConfig);
       log.info('Download overlay enabled (hover bottom-right corner)');
     }
 
@@ -438,16 +440,17 @@ class PwaPlayer {
       await this.prepareAndRenderLayout(layoutId);
     });
 
-    this.core.on('layout-already-playing', () => {
-      // Layout already playing, no action needed
-    });
-
     this.core.on('no-layouts-scheduled', () => {
       this.updateStatus('No layouts scheduled');
     });
 
     this.core.on('collection-complete', () => {
-      this.updateStatus('Collection complete');
+      const layoutId = this.core.getCurrentLayoutId();
+      if (layoutId) {
+        this.updateStatus(`Playing layout ${layoutId}`);
+      } else if (this.preparingLayoutId) {
+        this.updateStatus(`Downloading layout ${this.preparingLayoutId}...`);
+      }
     });
 
     this.core.on('collection-error', (error: any) => {
@@ -478,7 +481,7 @@ class PwaPlayer {
       log.info(`Log level changed, debug=${debugNow}`);
 
       if (debugNow && !this.downloadOverlay) {
-        this.downloadOverlay = new DownloadOverlay(getDefaultOverlayConfig(), cacheProxy);
+        this.downloadOverlay = new DownloadOverlay(getDefaultOverlayConfig());
         log.info('Download overlay enabled (log level → DEBUG)');
       } else if (!debugNow && this.downloadOverlay) {
         this.downloadOverlay.destroy();
@@ -561,15 +564,6 @@ class PwaPlayer {
       await this.captureAndSubmitScreenshot();
     });
 
-    // Listen for media downloads completing
-    window.addEventListener('media-cached', async (event: any) => {
-      const mediaId = event.detail?.id;
-      log.debug(`Media ${mediaId} download completed`);
-
-      // Notify core that media is ready
-      this.core.notifyMediaReady(mediaId);
-    });
-
     // Handle check-pending-layout events
     // Re-run prepareAndRenderLayout which checks XLF + actual media IDs correctly
     // (avoids the bug where setPendingLayout(id,[id]) treated layoutId as mediaId)
@@ -596,6 +590,10 @@ class PwaPlayer {
     });
   }
 
+  private parseBody(body: string | null): any {
+    try { return body ? JSON.parse(body) : {}; } catch (_) { return {}; }
+  }
+
   /**
    * Handle an Interactive Control request from a widget
    */
@@ -615,8 +613,7 @@ class PwaPlayer {
         };
 
       case '/trigger': {
-        let data: any = {};
-        try { data = body ? JSON.parse(body) : {}; } catch (_) {}
+        const data = this.parseBody(body);
         // Forward to renderer for layout-level actions (widget navigation)
         this.renderer.emit('interactiveTrigger', {
           targetId: data.id,
@@ -630,16 +627,14 @@ class PwaPlayer {
       }
 
       case '/duration/expire': {
-        let data: any = {};
-        try { data = body ? JSON.parse(body) : {}; } catch (_) {}
+        const data = this.parseBody(body);
         log.info('IC: Widget duration expire requested for', data.id);
         this.renderer.emit('widgetExpire', { widgetId: data.id });
         return { status: 200, body: 'OK' };
       }
 
       case '/duration/extend': {
-        let data: any = {};
-        try { data = body ? JSON.parse(body) : {}; } catch (_) {}
+        const data = this.parseBody(body);
         log.info('IC: Widget duration extend by', data.duration, 'for', data.id);
         this.renderer.emit('widgetExtendDuration', {
           widgetId: data.id,
@@ -649,8 +644,7 @@ class PwaPlayer {
       }
 
       case '/duration/set': {
-        let data: any = {};
-        try { data = body ? JSON.parse(body) : {}; } catch (_) {}
+        const data = this.parseBody(body);
         log.info('IC: Widget duration set to', data.duration, 'for', data.id);
         this.renderer.emit('widgetSetDuration', {
           widgetId: data.id,
@@ -660,8 +654,7 @@ class PwaPlayer {
       }
 
       case '/fault': {
-        let data: any = {};
-        try { data = body ? JSON.parse(body) : {}; } catch (_) {}
+        const data = this.parseBody(body);
         this.logReporter?.reportFault(
           data.code || 'WIDGET_FAULT',
           data.reason || 'Widget reported fault'
@@ -685,7 +678,6 @@ class PwaPlayer {
           return { status: 404, body: JSON.stringify({ error: `No data available for key: ${dataKey}` }) };
         }
 
-        // Return data as JSON (stringify if it's an object, pass through if already a string)
         const responseBody = typeof connectorData === 'string' ? connectorData : JSON.stringify(connectorData);
         return { status: 200, body: responseBody };
       }
@@ -724,6 +716,12 @@ class PwaPlayer {
       log.info('Layout started:', layoutId);
       this.updateStatus(`Playing layout ${layoutId}`);
       this.core.setCurrentLayout(layoutId);
+
+      // Correct timeline duration if renderer discovered actual duration
+      // (e.g., video loadedmetadata replaces the 60s estimate)
+      if (_layout?.duration) {
+        this.core.recordLayoutDuration(String(layoutId), _layout.duration);
+      }
 
       // Track stats: start layout
       if (this.statsCollector) {
@@ -847,6 +845,11 @@ class PwaPlayer {
       }
     });
 
+    // Correct timeline duration when video metadata reveals actual duration
+    this.renderer.on('layoutDurationUpdated', (layoutId: number, duration: number) => {
+      this.core.recordLayoutDuration(String(layoutId), duration);
+    });
+
     // Handle next layout preload request from renderer
     // Fired at 75% of current layout duration to pre-build the next layout's DOM
     this.renderer.on('request-next-layout-preload', async () => {
@@ -878,8 +881,7 @@ class PwaPlayer {
         const xlfXml = await xlfBlob.text();
 
         // Check if all required media is cached
-        const requiredMedia = await this.getRequiredMediaIds(xlfXml);
-        const videoMediaIds = this.getVideoMediaIds(xlfXml);
+        const { allMedia: requiredMedia, videoMedia: videoMediaIds } = this.getMediaIds(xlfXml);
         const allMediaCached = await this.checkAllMediaCached(requiredMedia, videoMediaIds);
 
         if (!allMediaCached) {
@@ -942,8 +944,7 @@ class PwaPlayer {
       const xlfXml = await xlfBlob.text();
 
       // Check if all required media is cached
-      const requiredMedia = await this.getRequiredMediaIds(xlfXml);
-      const videoMediaIds = this.getVideoMediaIds(xlfXml);
+      const { allMedia: requiredMedia, videoMedia: videoMediaIds } = this.getMediaIds(xlfXml);
       const allMediaCached = await this.checkAllMediaCached(requiredMedia, videoMediaIds);
 
       if (!allMediaCached) {
@@ -956,9 +957,6 @@ class PwaPlayer {
         this.core.setPendingLayout(layoutId, requiredMedia);
         return; // Keep playing current layout until media is ready
       }
-
-      // Pre-fetch common widget dependencies (bundle.min.js, fonts.css)
-      await this.prefetchWidgetDependencies();
 
       // Fetch widget HTML for all widgets in the layout
       await this.fetchWidgetHtml(xlfXml, layoutId);
@@ -988,51 +986,36 @@ class PwaPlayer {
   }
 
   /**
-   * Get all required media file IDs from layout XLF
+   * Get all required media file IDs and video-specific IDs from layout XLF.
+   * Single parse to avoid double DOMParser overhead on the same XML.
    */
-  private async getRequiredMediaIds(xlfXml: string): Promise<number[]> {
+  private getMediaIds(xlfXml: string): { allMedia: number[]; videoMedia: number[] } {
     const parser = new DOMParser();
     const doc = parser.parseFromString(xlfXml, 'text/xml');
-    const mediaIds: number[] = [];
+    const allMedia: number[] = [];
+    const videoMedia: number[] = [];
 
-    // Find all media elements with fileId
-    const mediaElements = doc.querySelectorAll('media[fileId]');
-    mediaElements.forEach(el => {
+    doc.querySelectorAll('media[fileId]').forEach(el => {
       const fileId = el.getAttribute('fileId');
       if (fileId) {
-        mediaIds.push(parseInt(fileId, 10));
+        const id = parseInt(fileId, 10);
+        allMedia.push(id);
+        if (el.getAttribute('type') === 'video') {
+          videoMedia.push(id);
+        }
       }
     });
 
     // Include background image file ID from layout element
-    const layoutEl = doc.querySelector('layout');
-    const bgFileId = layoutEl?.getAttribute('background');
+    const bgFileId = doc.querySelector('layout')?.getAttribute('background');
     if (bgFileId) {
       const parsed = parseInt(bgFileId, 10);
-      if (!isNaN(parsed) && !mediaIds.includes(parsed)) {
-        mediaIds.push(parsed);
+      if (!isNaN(parsed) && !allMedia.includes(parsed)) {
+        allMedia.push(parsed);
       }
     }
 
-    return mediaIds;
-  }
-
-  /**
-   * Get media file IDs for video widgets in the layout XLF
-   */
-  private getVideoMediaIds(xlfXml: string): number[] {
-    const parser = new DOMParser();
-    const doc = parser.parseFromString(xlfXml, 'text/xml');
-    const videoIds: number[] = [];
-
-    doc.querySelectorAll('media[type="video"]').forEach(el => {
-      const fileId = el.getAttribute('fileId');
-      if (fileId) {
-        videoIds.push(parseInt(fileId, 10));
-      }
-    });
-
-    return videoIds;
+    return { allMedia, videoMedia };
   }
 
   /**
@@ -1126,25 +1109,6 @@ class PwaPlayer {
   }
 
   /**
-   * Pre-fetch common widget dependencies (bundle.min.js, fonts.css)
-   * These are downloaded by the SW via signed URLs from RequiredFiles.
-   * Just check the SW's static cache — don't construct manual URLs.
-   */
-  private async prefetchWidgetDependencies() {
-    const filenames = ['bundle.min.js', 'fonts.css'];
-
-    const cache = await caches.open('xibo-static-v1');
-    for (const filename of filenames) {
-      const cached = await cache.match(`${PLAYER_BASE}/cache/static/${filename}`);
-      if (cached) {
-        log.debug(`Widget dependency ${filename} already cached by SW`);
-      } else {
-        log.debug(`Widget dependency ${filename} not yet cached (will be fetched by SW on first use)`);
-      }
-    }
-  }
-
-  /**
    * Fetch widget HTML for all widgets in layout (parallel)
    */
   private async fetchWidgetHtml(xlfXml: string, layoutId: number) {
@@ -1208,24 +1172,13 @@ class PwaPlayer {
   }
 
   /**
-   * Setup UI
-   */
-  private setupUI() {
-    const container = document.getElementById('player-container');
-    if (!container) {
-      log.warn('No #player-container found');
-    }
-
-    this.updateConfigDisplay();
-  }
-
-  /**
    * Update config display
    */
   private updateConfigDisplay() {
     const configEl = document.getElementById('config-info');
     if (configEl) {
-      configEl.textContent = `CMS: ${config.cmsAddress} | Display: ${config.displayName || 'Unknown'} | HW: ${config.hardwareKey}`;
+      const version = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '?';
+      configEl.textContent = `v${version} | CMS: ${config.cmsAddress} | Display: ${config.displayName || 'Unknown'} | HW: ${config.hardwareKey}`;
     }
   }
 
@@ -1730,25 +1683,18 @@ class PwaPlayer {
   }
 }
 
-// Initialize player
-if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', () => {
-    const player = new PwaPlayer();
-    player.init().catch(error => {
-      log.error('Failed to initialize:', error);
-    });
-
-    window.addEventListener('beforeunload', () => {
-      player.cleanup();
-    });
-  });
-} else {
+function startPlayer() {
   const player = new PwaPlayer();
   player.init().catch(error => {
     log.error('Failed to initialize:', error);
   });
-
   window.addEventListener('beforeunload', () => {
     player.cleanup();
   });
+}
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', startPlayer);
+} else {
+  startPlayer();
 }
