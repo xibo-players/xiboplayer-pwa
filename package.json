@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "description": "Lightweight PWA Xibo Player with RendererLite",
   "type": "module",
+  "files": ["dist"],
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
