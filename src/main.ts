@@ -14,6 +14,7 @@ import { PlayerCore } from '@xiboplayer/core';
 // @ts-ignore - JavaScript module
 import { createLogger, isDebug, registerLogSink } from '@xiboplayer/utils';
 import { DownloadOverlay, getDefaultOverlayConfig } from './download-overlay.js';
+import { TimelineOverlay, isTimelineVisible } from './timeline-overlay.js';
 
 declare const __APP_VERSION__: string;
 
@@ -41,16 +42,19 @@ class PwaPlayer {
   private core!: PlayerCore;
   private xmds!: any;
   private downloadOverlay: DownloadOverlay | null = null;
+  private timelineOverlay: TimelineOverlay | null = null;
   private statsCollector: any = null;
   private logReporter: any = null;
   private displaySettings: any = null;
   private currentScheduleId: number = -1; // Track scheduleId for stats
+  private scheduledLayoutIds: Set<number> = new Set(); // Layout IDs from current schedule
   private preparingLayoutId: number | null = null; // Guard against concurrent prepareAndRenderLayout calls
   private _screenshotInterval: any = null;
   private _screenshotMethod: 'electron' | 'native' | 'html2canvas' | null = null;
   private _screenshotInFlight = false; // Concurrency guard — one capture at a time
   private _html2canvasMod: any = null; // Pre-loaded module
   private _wakeLock: any = null; // Screen Wake Lock sentinel
+  private _probeTimer: any = null; // Debounce timer for duration probing
 
   async init() {
     log.info('Initializing player with RendererLite + PlayerCore...');
@@ -208,6 +212,9 @@ class PwaPlayer {
       this.downloadOverlay = new DownloadOverlay(overlayConfig);
       log.info('Download overlay enabled (hover bottom-right corner)');
     }
+
+    // Initialize timeline overlay (toggleable with T key)
+    this.timelineOverlay = new TimelineOverlay(isTimelineVisible());
 
     // Request Screen Wake Lock to prevent display sleep
     await this.requestWakeLock();
@@ -432,6 +439,7 @@ class PwaPlayer {
         if (cleared > 0) {
           log.info(`Cleared ${cleared} preloaded layout(s) no longer in schedule`);
         }
+        this.scheduledLayoutIds = scheduledIds;
       }
 
       log.debug('Current scheduleId for stats:', this.currentScheduleId);
@@ -452,6 +460,11 @@ class PwaPlayer {
       } else if (this.preparingLayoutId) {
         this.updateStatus(`Downloading layout ${this.preparingLayoutId}...`);
       }
+
+      // Probe video durations for accurate timeline (metadata only, not full download)
+      this.probeLayoutDurations().catch(err => {
+        log.debug('Duration probe failed (non-blocking):', err);
+      });
     });
 
     this.core.on('collection-error', (error: any) => {
@@ -571,6 +584,11 @@ class PwaPlayer {
     this.core.on('check-pending-layout', async (layoutId: number) => {
       await this.prepareAndRenderLayout(layoutId);
     });
+
+    // Timeline overlay — visualize upcoming schedule
+    this.core.on('timeline-updated', (timeline: any[]) => {
+      this.timelineOverlay?.update(timeline, this.core.getCurrentLayoutId());
+    });
   }
 
 
@@ -597,6 +615,13 @@ class PwaPlayer {
    * and MediaSession API for multimedia keyboard keys.
    */
   private setupRemoteControls() {
+    // Keep focus on main document so keyboard shortcuts work even with widget iframes.
+    // Iframes steal focus — this pulls it back after a short delay so interactive
+    // widgets still work momentarily but keyboard control returns to the player.
+    window.addEventListener('blur', () => {
+      setTimeout(() => window.focus(), 200);
+    });
+
     // Keyboard / presenter remote (clicker) controls
     document.addEventListener('keydown', (e: KeyboardEvent) => {
       switch (e.key) {
@@ -632,6 +657,10 @@ class PwaPlayer {
             log.info('[Remote] Pause (MediaPlayPause)');
             this.renderer.pause();
           }
+          break;
+        case 't':
+        case 'T':
+          this.timelineOverlay?.toggle();
           break;
       }
     });
@@ -773,6 +802,13 @@ class PwaPlayer {
         if (fileType === 'media' || fileType === 'layout') {
           this.core.notifyMediaReady(parseInt(fileId), fileType);
         }
+
+        // Debounced duration probe — run after downloads settle
+        if (this._probeTimer) clearTimeout(this._probeTimer);
+        this._probeTimer = setTimeout(() => {
+          this._probeTimer = null;
+          this.probeLayoutDurations().catch(() => {});
+        }, 3000);
       }
     });
   }
@@ -785,6 +821,9 @@ class PwaPlayer {
       log.info('Layout started:', layoutId);
       this.updateStatus(`Playing layout ${layoutId}`);
       this.core.setCurrentLayout(layoutId);
+
+      // Update timeline overlay highlight
+      this.timelineOverlay?.update(null, layoutId);
 
       // Correct timeline duration if renderer discovered actual duration
       // (e.g., video loadedmetadata replaces the 60s estimate)
@@ -1238,6 +1277,91 @@ class PwaPlayer {
       await Promise.all(fetchPromises);
       log.debug('All widget HTML fetched');
     }
+  }
+
+  /**
+   * Probe video durations for all scheduled layouts.
+   * Uses preload="metadata" — only fetches headers (~50KB), not the full video.
+   * Feeds discovered durations into PlayerCore for accurate timeline calculation.
+   */
+  private async probeLayoutDurations() {
+    if (this.scheduledLayoutIds.size === 0) return;
+
+    for (const layoutId of this.scheduledLayoutIds) {
+
+      try {
+        const xlfBlob = await cacheManager.getCachedFile('layout', layoutId);
+        if (!xlfBlob) continue;
+
+        const xlfXml = await xlfBlob.text();
+        const { videoMedia } = this.getMediaIds(xlfXml);
+        if (videoMedia.length === 0) continue;
+
+        // Parse XLF to find video widgets with duration=0 (use media length)
+        const parser = new DOMParser();
+        const doc = parser.parseFromString(xlfXml, 'text/xml');
+        let maxDuration = 0;
+
+        for (const mediaEl of doc.querySelectorAll('media[type="video"]')) {
+          const useDuration = mediaEl.getAttribute('useDuration');
+          if (useDuration === '1') continue; // Has explicit CMS duration, skip
+
+          const fileId = mediaEl.getAttribute('fileId');
+          if (!fileId) continue;
+
+          const exists = await cacheProxy.hasFile('media', fileId);
+          if (!exists) continue;
+
+          // Probe metadata only — does NOT download the full video
+          const duration = await this.probeVideoDuration(`${PLAYER_BASE}/cache/media/${fileId}`);
+          if (duration > 0) {
+            maxDuration = Math.max(maxDuration, duration);
+          }
+        }
+
+        if (maxDuration > 0) {
+          this.core.recordLayoutDuration(String(layoutId), maxDuration);
+        }
+      } catch (err) {
+        log.debug(`Duration probe failed for layout ${layoutId}:`, err);
+      }
+    }
+  }
+
+  /**
+   * Probe a single video's duration using metadata only.
+   * Creates a temporary <video preload="metadata"> element, reads duration, destroys it.
+   */
+  private probeVideoDuration(url: string): Promise<number> {
+    return new Promise((resolve) => {
+      const video = document.createElement('video');
+      video.preload = 'metadata';
+      video.muted = true;
+
+      const cleanup = () => {
+        video.removeAttribute('src');
+        video.load(); // Release resources
+      };
+
+      video.addEventListener('loadedmetadata', () => {
+        const dur = Math.floor(video.duration);
+        cleanup();
+        resolve(dur);
+      }, { once: true });
+
+      video.addEventListener('error', () => {
+        cleanup();
+        resolve(0);
+      }, { once: true });
+
+      // Safety timeout — don't block forever
+      setTimeout(() => {
+        cleanup();
+        resolve(0);
+      }, 5000);
+
+      video.src = url;
+    });
   }
 
   /**
@@ -1717,16 +1841,11 @@ class PwaPlayer {
   }
 
   private showOfflineIndicator() {
-    if (document.getElementById('offline-indicator')) return;
-    const el = document.createElement('div');
-    el.id = 'offline-indicator';
-    el.textContent = 'OFFLINE';
-    el.style.cssText = 'position:fixed;top:8px;right:8px;background:rgba(255,60,60,0.85);color:#fff;padding:4px 12px;border-radius:4px;font-size:12px;font-weight:bold;z-index:99999;pointer-events:none;';
-    document.body.appendChild(el);
+    this.timelineOverlay?.setOffline(true);
   }
 
   private removeOfflineIndicator() {
-    document.getElementById('offline-indicator')?.remove();
+    this.timelineOverlay?.setOffline(false);
   }
 
   /**
@@ -1748,6 +1867,10 @@ class PwaPlayer {
 
     if (this.downloadOverlay) {
       this.downloadOverlay.destroy();
+    }
+
+    if (this.timelineOverlay) {
+      this.timelineOverlay.destroy();
     }
   }
 }

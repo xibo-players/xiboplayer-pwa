@@ -36,18 +36,18 @@ export class DownloadOverlay {
     // Style like top status messages - always visible, clean design
     this.overlay.style.cssText = `
       position: fixed;
-      top: 50px;
-      left: 10px;
-      background: rgba(0, 0, 0, 0.85);
+      top: 1.5vh;
+      left: 1.5vw;
+      background: rgba(0, 0, 0, 0.88);
       color: #fff;
       font-family: system-ui, -apple-system, sans-serif;
-      font-size: 12px;
-      padding: 8px 12px;
-      border-radius: 4px;
-      border: 1px solid rgba(255, 255, 255, 0.2);
+      font-size: 1.4vw;
+      padding: 1vh 1.2vw;
+      border-radius: 0.4vw;
+      border: 1px solid rgba(255, 255, 255, 0.25);
       z-index: 999999;
-      max-width: 350px;
-      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+      max-width: 35vw;
+      box-shadow: 0 0.3vh 1.2vw rgba(0, 0, 0, 0.5);
     `;
 
     document.body.appendChild(this.overlay);
@@ -112,7 +112,7 @@ export class DownloadOverlay {
     }
 
     const numDownloads = Object.keys(downloads).length;
-    let html = `<div style="font-weight: 600; margin-bottom: 6px;">Downloads: ${numDownloads} active</div>`;
+    let html = `<div style="font-weight: 600; margin-bottom: 0.8vh; font-size: 1.4vw;">Downloads: ${numDownloads} active</div>`;
 
     for (const [url, progress] of Object.entries(downloads)) {
       const filename = this.extractFilename(url);
@@ -121,12 +121,12 @@ export class DownloadOverlay {
       const total = this.formatBytes((progress as any).total || 0);
 
       html += `
-        <div style="margin-bottom: 6px; padding-bottom: 6px; border-bottom: 1px solid rgba(255,255,255,0.1);">
-          <div style="font-size: 11px; margin-bottom: 2px;">${filename}</div>
-          <div style="background: rgba(255,255,255,0.1); height: 4px; border-radius: 2px; overflow: hidden;">
+        <div style="margin-bottom: 0.6vh; padding-bottom: 0.6vh; border-bottom: 1px solid rgba(255,255,255,0.1);">
+          <div style="font-size: 1.2vw; margin-bottom: 0.2vh;">${filename}</div>
+          <div style="background: rgba(255,255,255,0.1); height: 0.4vh; border-radius: 0.2vw; overflow: hidden;">
             <div style="width: ${percent}%; height: 100%; background: #4a9eff; transition: width 0.3s;"></div>
           </div>
-          <div style="color: #999; font-size: 10px; margin-top: 2px;">
+          <div style="color: #999; font-size: 1.1vw; margin-top: 0.2vh;">
             ${percent}% · ${downloaded} / ${total}
           </div>
         </div>
