@@ -1,0 +1,11 @@
+name: Publish to npm
+
+on:
+  push:
+    tags: ['v*']
+
+jobs:
+  publish:
+    uses: xibo-players/.github/.github/workflows/publish-npm.yml@main
+    secrets:
+      npm-token: ${{ secrets.NPM_TOKEN }}

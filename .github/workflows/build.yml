@@ -1,0 +1,10 @@
+name: Build PWA
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  build:
+    uses: xibo-players/.github/.github/workflows/build-pwa.yml@main
