@@ -7,7 +7,6 @@
 
 export interface DownloadOverlayConfig {
   enabled: boolean;
-  position?: 'top-right' | 'top-left' | 'bottom-right' | 'bottom-left';
   updateInterval?: number; // ms between updates
   autoHide?: boolean; // Hide when no downloads
 }
@@ -17,14 +16,12 @@ export class DownloadOverlay {
   private config: DownloadOverlayConfig;
   private updateTimer: number | null = null;
 
-  constructor(config: DownloadOverlayConfig, _cacheProxy?: any) {
+  constructor(config: DownloadOverlayConfig) {
     this.config = {
-      position: 'bottom-right',
       updateInterval: 1000,
       autoHide: true,
       ...config
     };
-    // cacheProxy not needed - using SW postMessage instead
 
     if (this.config.enabled) {
       this.createOverlay();
@@ -107,7 +104,7 @@ export class DownloadOverlay {
   private renderStatus(progress: any): string {
     const downloads = progress || {};
 
-    if (!downloads || Object.keys(downloads).length === 0) {
+    if (Object.keys(downloads).length === 0) {
       if (this.config.autoHide) {
         return ''; // Hide when no downloads
       }

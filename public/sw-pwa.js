@@ -26,6 +26,18 @@ import {
   BASE
 } from './sw-utils.js';
 
+/** Content-type map for static widget resources (JS, CSS, fonts, SVG) */
+const STATIC_CONTENT_TYPES = {
+  'js': 'application/javascript',
+  'css': 'text/css',
+  'otf': 'font/otf',
+  'ttf': 'font/ttf',
+  'woff': 'font/woff',
+  'woff2': 'font/woff2',
+  'eot': 'application/vnd.ms-fontobject',
+  'svg': 'image/svg+xml'
+};
+
 // Simple logger for Service Worker context
 // Uses console but can be configured via self.swLogLevel
 class SWLogger {
@@ -1466,16 +1478,7 @@ class MessageHandler {
           const staticKey = `${BASE}/cache/static/${filename}`;
 
           const ext = filename.split('.').pop().toLowerCase();
-          const staticContentType = {
-            'js': 'application/javascript',
-            'css': 'text/css',
-            'otf': 'font/otf',
-            'ttf': 'font/ttf',
-            'woff': 'font/woff',
-            'woff2': 'font/woff2',
-            'eot': 'application/vnd.ms-fontobject',
-            'svg': 'image/svg+xml'
-          }[ext] || 'application/octet-stream';
+          const staticContentType = STATIC_CONTENT_TYPES[ext] || 'application/octet-stream';
 
           await Promise.all([
             staticCache.put(staticKey, new Response(blob.slice(0, blob.size, blob.type), {
@@ -1520,16 +1523,7 @@ class MessageHandler {
 
     const blob = await cached.blob();
     const ext = filename.split('.').pop().toLowerCase();
-    const staticContentType = {
-      'js': 'application/javascript',
-      'css': 'text/css',
-      'otf': 'font/otf',
-      'ttf': 'font/ttf',
-      'woff': 'font/woff',
-      'woff2': 'font/woff2',
-      'eot': 'application/vnd.ms-fontobject',
-      'svg': 'image/svg+xml'
-    }[ext] || 'application/octet-stream';
+    const staticContentType = STATIC_CONTENT_TYPES[ext] || 'application/octet-stream';
 
     const staticPathKey = `${BASE}/cache/static/${filename}`;
 
