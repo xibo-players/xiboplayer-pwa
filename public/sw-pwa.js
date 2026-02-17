@@ -1098,6 +1098,10 @@ class MessageHandler {
       case 'PREWARM_VIDEO_CHUNKS':
         return await this.handlePrewarmVideoChunks(data.mediaIds);
 
+      case 'PRIORITIZE_LAYOUT_FILES':
+        this.downloadManager.prioritizeLayoutFiles(data.mediaIds);
+        return { success: true };
+
       default:
         this.log.warn('Unknown message type:', type);
         return { success: false, error: 'Unknown message type' };

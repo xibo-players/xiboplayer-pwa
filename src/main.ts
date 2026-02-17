@@ -947,12 +947,9 @@ class PwaPlayer {
       const allMediaCached = await this.checkAllMediaCached(requiredMedia, videoMediaIds);
 
       if (!allMediaCached) {
-        // Tell SW to prioritize this layout's media over other downloads.
-        // This moves pending media to the front of the queue and avoids
-        // competing for bandwidth with media needed by other layouts.
-        for (const mediaId of requiredMedia) {
-          cacheProxy.prioritizeDownload('media', String(mediaId));
-        }
+        // Reorder download queue: current layout's media first, hold others.
+        // All files (including all chunks) must complete before other layouts start.
+        cacheProxy.prioritizeLayoutFiles(requiredMedia.map(String));
 
         log.info(`Waiting for media to finish downloading for layout ${layoutId}`);
         this.updateStatus(`Preparing layout ${layoutId}...`);
