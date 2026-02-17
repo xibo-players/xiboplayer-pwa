@@ -170,6 +170,7 @@ class PwaPlayer {
     this.setupRendererEventHandlers();
     this.setupServiceWorkerEventHandlers();
     this.setupInteractiveControl();
+    this.setupRemoteControls();
 
     // Set display location from CMS settings when registration completes
     this.core.on('register-complete', (regResult: any) => {
@@ -588,6 +589,74 @@ class PwaPlayer {
       const response = this.handleInteractiveControl(method, path, search, body);
       port.postMessage(response);
     });
+  }
+
+  /**
+   * Setup keyboard and presenter remote controls.
+   * Handles arrow keys, page up/down, space for next/prev/pause,
+   * and MediaSession API for multimedia keyboard keys.
+   */
+  private setupRemoteControls() {
+    // Keyboard / presenter remote (clicker) controls
+    document.addEventListener('keydown', (e: KeyboardEvent) => {
+      switch (e.key) {
+        case 'ArrowRight':
+        case 'PageDown':
+        case 'MediaTrackNext':
+          if (this.core.peekNextLayout()) {
+            log.info('[Remote] Next layout');
+            this.core.advanceToNextLayout();
+          }
+          break;
+        case 'ArrowLeft':
+        case 'PageUp':
+        case 'MediaTrackPrevious':
+          log.info('[Remote] Previous layout');
+          this.core.advanceToPreviousLayout();
+          break;
+        case ' ':
+          e.preventDefault(); // prevent scroll
+          if (this.renderer._paused) {
+            log.info('[Remote] Resume');
+            this.renderer.resume();
+          } else {
+            log.info('[Remote] Pause');
+            this.renderer.pause();
+          }
+          break;
+        case 'MediaPlayPause':
+          if (this.renderer._paused) {
+            log.info('[Remote] Resume (MediaPlayPause)');
+            this.renderer.resume();
+          } else {
+            log.info('[Remote] Pause (MediaPlayPause)');
+            this.renderer.pause();
+          }
+          break;
+      }
+    });
+
+    // MediaSession API for multimedia keys (only fires when media is active)
+    if ('mediaSession' in navigator) {
+      navigator.mediaSession.setActionHandler('nexttrack', () => {
+        log.info('[Remote] Next layout (MediaSession)');
+        this.core.advanceToNextLayout();
+      });
+      navigator.mediaSession.setActionHandler('previoustrack', () => {
+        log.info('[Remote] Previous layout (MediaSession)');
+        this.core.advanceToPreviousLayout();
+      });
+      navigator.mediaSession.setActionHandler('pause', () => {
+        log.info('[Remote] Pause (MediaSession)');
+        this.renderer.pause();
+      });
+      navigator.mediaSession.setActionHandler('play', () => {
+        log.info('[Remote] Resume (MediaSession)');
+        this.renderer.resume();
+      });
+    }
+
+    log.info('Remote controls initialized (keyboard + MediaSession)');
   }
 
   private parseBody(body: string | null): any {
