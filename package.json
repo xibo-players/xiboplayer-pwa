@@ -1,6 +1,6 @@
 {
   "name": "@xiboplayer/pwa",
-  "version": "0.1.3",
+  "version": "0.2.0",
   "description": "Lightweight PWA Xibo Player with RendererLite",
   "type": "module",
   "files": [
@@ -13,24 +13,25 @@
     "type-check": "tsc --noEmit"
   },
   "dependencies": {
-    "@xiboplayer/utils": "^0.1.3",
     "@xiboplayer/cache": "^0.1.3",
+    "@xiboplayer/core": "^0.1.3",
     "@xiboplayer/renderer": "^0.1.3",
     "@xiboplayer/schedule": "^0.1.3",
+    "@xiboplayer/settings": "^0.1.3",
+    "@xiboplayer/stats": "^0.1.3",
+    "@xiboplayer/utils": "^0.1.3",
     "@xiboplayer/xmds": "^0.1.3",
     "@xiboplayer/xmr": "^0.1.3",
-    "@xiboplayer/core": "^0.1.3",
-    "@xiboplayer/stats": "^0.1.3",
-    "@xiboplayer/settings": "^0.1.3",
-    "xml2js": "^0.6.2",
+    "html2canvas": "^1.4.1",
     "nanoevents": "^9.0.0",
-    "html2canvas": "^1.4.1"
+    "xml2js": "^0.6.2",
+    "{utils,cache,renderer,schedule,xmds,xmr,core,stats,settings}": "link:../xiboplayer/packages/{utils,cache,renderer,schedule,xmds,xmr,core,stats,settings}"
   },
   "devDependencies": {
-    "typescript": "^5.6.3",
-    "vite": "^5.4.11",
+    "@types/node": "^22.10.5",
     "@types/xml2js": "^0.4.14",
-    "@types/node": "^22.10.5"
+    "typescript": "^5.6.3",
+    "vite": "^5.4.11"
   },
   "author": "Pau Aliagas <linuxnow@gmail.com>",
   "license": "Apache-2.0",
