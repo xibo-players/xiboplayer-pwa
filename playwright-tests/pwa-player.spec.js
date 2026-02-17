@@ -13,7 +13,7 @@
 
 import { test, expect } from '@playwright/test';
 
-const PWA_URL = 'http://h1.superpantalles.com:8081/player/pwa/';
+const PWA_URL = process.env.PWA_URL || 'https://displays.superpantalles.com/player/pwa/';
 
 test.describe('PWA Player - Complete Functionality', () => {
 

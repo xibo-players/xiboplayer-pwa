@@ -47,6 +47,14 @@ pnpm run build
 pnpm run dev
 ```
 
+## Testing
+
+Playwright E2E tests are in `playwright-tests/`. These are manual QA scripts meant to be run against a live CMS with layouts already scheduled — they are not suitable for CI.
+
+```bash
+PWA_URL=https://your-cms.example.com/player/pwa/ npx playwright test
+```
+
 ## License
 
 Apache-2.0
