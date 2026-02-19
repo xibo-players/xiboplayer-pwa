@@ -1858,19 +1858,22 @@ self.addEventListener('install', (event) => {
       // Only skipWaiting if this is a genuinely new version.
       // Re-activating the same version kills in-flight fetch responses
       // (e.g. video streams), causing playback stalls.
-      try {
-        const versionCache = await caches.open('xibo-sw-version');
-        const stored = await versionCache.match('version');
-        if (stored) {
-          const activeVersion = await stored.text();
-          if (activeVersion === SW_VERSION) {
-            log.info('Same version already active, skipping activation to preserve streams');
-            return; // Don't skipWaiting — let the existing SW keep serving
+      // But always activate if there's no active SW (fresh install or after wipe).
+      if (self.registration.active) {
+        try {
+          const versionCache = await caches.open('xibo-sw-version');
+          const stored = await versionCache.match('version');
+          if (stored) {
+            const activeVersion = await stored.text();
+            if (activeVersion === SW_VERSION) {
+              log.info('Same version already active, skipping activation to preserve streams');
+              return; // Don't skipWaiting — let the existing SW keep serving
+            }
+            log.info('Version changed:', activeVersion, '→', SW_VERSION);
           }
-          log.info('Version changed:', activeVersion, '→', SW_VERSION);
+        } catch (_) {
+          // Can't read version cache — proceed with skipWaiting
         }
-      } catch (_) {
-        // Can't read version cache — proceed with skipWaiting
       }
       log.info('New version, activating immediately');
       return self.skipWaiting();
