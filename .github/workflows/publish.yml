@@ -8,5 +8,8 @@ on:
 jobs:
   publish:
     uses: xibo-players/.github/.github/workflows/publish-npm.yml@main
+    with:
+      cache-deps: false
+      install-command: 'pnpm install --no-frozen-lockfile'
     secrets:
       npm-token: ${{ secrets.NPM_TOKEN }}
