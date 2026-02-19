@@ -9,4 +9,5 @@ jobs:
   build:
     uses: xibo-players/.github/.github/workflows/build-pwa.yml@main
     with:
+      cache-deps: false
       install-command: 'pnpm install --no-frozen-lockfile'
