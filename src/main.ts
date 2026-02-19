@@ -1546,73 +1546,15 @@ class PwaPlayer {
   }
 
   /**
-   * Capture screenshot using browser-native methods (non-Electron path)
+   * Capture screenshot using browser-native methods (non-Electron path).
+   * Uses html2canvas directly — getDisplayMedia() is not used because:
+   * - On Wayland, it always shows an OS-level picker dialog (XDG Desktop Portal)
+   * - Chrome's --auto-select-desktop-capture-source flag only works on X11
+   * - html2canvas works without permissions and captures the layout faithfully
    */
   private async captureWithBrowserMethods(): Promise<string> {
-    // Try native capture first (unless we already know it doesn't work)
-    if (this._screenshotMethod !== 'html2canvas') {
-      const nativeResult = await this.captureNative();
-      if (nativeResult) {
-        this._screenshotMethod = 'native';
-        return nativeResult;
-      }
-      this._screenshotMethod = 'html2canvas';
-      log.info('Native screen capture unavailable, using html2canvas');
-    }
+    this._screenshotMethod = 'html2canvas';
     return this.captureHtml2Canvas();
-  }
-
-  /**
-   * Native screen capture via getDisplayMedia().
-   * Works on Chrome/Chromium launched with:
-   *   --auto-select-desktop-capture-source="Entire screen"
-   * Returns base64 JPEG or null if unavailable.
-   */
-  private async captureNative(): Promise<string | null> {
-    if (!navigator.mediaDevices?.getDisplayMedia) return null;
-
-    let stream: MediaStream | null = null;
-    try {
-      stream = await navigator.mediaDevices.getDisplayMedia({
-        video: { displaySurface: 'browser' } as any,
-        audio: false,
-        // @ts-ignore — Chrome-specific hint to prefer current tab
-        preferCurrentTab: true,
-      });
-
-      const track = stream.getVideoTracks()[0];
-      // Use ImageCapture if available (Chrome), otherwise VideoFrame fallback
-      if (typeof ImageCapture !== 'undefined') {
-        const capture = new (ImageCapture as any)(track);
-        const bitmap = await (capture as any).grabFrame();
-        const canvas = document.createElement('canvas');
-        canvas.width = bitmap.width;
-        canvas.height = bitmap.height;
-        canvas.getContext('2d')!.drawImage(bitmap, 0, 0);
-        bitmap.close();
-        return canvas.toDataURL('image/jpeg', 0.8).split(',')[1];
-      }
-
-      // Fallback: draw video track to canvas
-      const video = document.createElement('video');
-      video.srcObject = stream;
-      video.muted = true;
-      await video.play();
-      // Wait one frame for the video to render
-      await new Promise(r => requestAnimationFrame(r));
-      const canvas = document.createElement('canvas');
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
-      canvas.getContext('2d')!.drawImage(video, 0, 0);
-      video.pause();
-      return canvas.toDataURL('image/jpeg', 0.8).split(',')[1];
-    } catch (_) {
-      // User denied, no auto-grant, or API unavailable
-      return null;
-    } finally {
-      // Always stop all tracks to release the capture
-      stream?.getTracks().forEach(t => t.stop());
-    }
   }
 
   /**
