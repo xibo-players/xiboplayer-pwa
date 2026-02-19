@@ -17,6 +17,7 @@ import { DownloadOverlay, getDefaultOverlayConfig } from './download-overlay.js'
 import { TimelineOverlay, isTimelineVisible } from './timeline-overlay.js';
 
 declare const __APP_VERSION__: string;
+declare const __BUILD_DATE__: string;
 
 const log = createLogger('PWA');
 
@@ -36,6 +37,9 @@ let formatStats: any;
 let LogReporter: any;
 let formatLogs: any;
 let DisplaySettings: any;
+
+// SDK package versions (populated in loadCoreModules)
+const sdkVersions: Record<string, string> = {};
 
 class PwaPlayer {
   private renderer!: RendererLite;
@@ -274,6 +278,10 @@ class PwaPlayer {
       const statsModule = await import('@xiboplayer/stats');
       // @ts-ignore
       const displaySettingsModule = await import('@xiboplayer/settings');
+      // @ts-ignore
+      const coreModule = await import('@xiboplayer/core');
+      // @ts-ignore
+      const rendererModule = await import('@xiboplayer/renderer');
 
       cacheManager = cacheModule.cacheManager;
       scheduleManager = scheduleModule.scheduleManager;
@@ -286,6 +294,17 @@ class PwaPlayer {
       LogReporter = statsModule.LogReporter;
       formatLogs = statsModule.formatLogs;
       DisplaySettings = displaySettingsModule.DisplaySettings;
+
+      // Capture SDK package versions
+      sdkVersions.core = coreModule.VERSION || '?';
+      sdkVersions.cache = cacheModule.VERSION || '?';
+      sdkVersions.renderer = rendererModule.VERSION || '?';
+      sdkVersions.schedule = scheduleModule.VERSION || '?';
+      sdkVersions.xmds = xmdsModule.VERSION || '?';
+      sdkVersions.xmr = xmrModule.VERSION || '?';
+      sdkVersions.utils = configModule.VERSION || '?';
+      sdkVersions.stats = statsModule.VERSION || '?';
+      sdkVersions.settings = displaySettingsModule.VERSION || '?';
 
       // Get MAC address from Electron if available (for WOL support)
       if ((window as any).electronAPI?.getSystemInfo) {
@@ -340,6 +359,18 @@ class PwaPlayer {
       this.displaySettings = new DisplaySettings();
       log.info('Display settings manager initialized');
 
+      // Log version and environment information for debugging
+      const buildDate = typeof __BUILD_DATE__ !== 'undefined' ? __BUILD_DATE__ : '?';
+      const appVersion = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '?';
+      log.info(`v${appVersion} built ${buildDate}`);
+      const versionParts = Object.entries(sdkVersions).map(([k, v]) => `${k}=${v}`).join(' ');
+      log.info(`SDK: ${versionParts}`);
+      const isElectron = !!(window as any).electronAPI;
+      const electronVersion = isElectron ? (navigator.userAgent.match(/Electron\/([\d.]+)/)?.[1] || '?') : null;
+      const chromeVersion = navigator.userAgent.match(/Chrome\/([\d.]+)/)?.[1] || '?';
+      const platform = isElectron ? `Electron ${electronVersion} / Chrome ${chromeVersion}` : `Chrome ${chromeVersion}`;
+      log.info(`Env: PWA v${appVersion} | ${platform} | ${navigator.platform} | ${screen.width}x${screen.height}`);
+
       log.info('Core modules loaded');
     } catch (error) {
       log.error('Failed to load core modules:', error);
@@ -389,12 +420,13 @@ class PwaPlayer {
       }
     });
 
-    this.core.on('download-request', async (files: any[]) => {
+    this.core.on('download-request', async (groupedFiles: any) => {
       // Platform handles the actual download via CacheProxy
       // Restart overlay polling while downloads are active
       this.downloadOverlay?.startUpdating();
       try {
-        await cacheProxy.requestDownload(files);
+        // groupedFiles is { layouts: [{ layoutId, mediaFiles }] }
+        await cacheProxy.requestDownload(groupedFiles);
         log.info('Download request complete');
       } catch (error) {
         log.error('Download request failed:', error);
@@ -1371,7 +1403,9 @@ class PwaPlayer {
     const configEl = document.getElementById('config-info');
     if (configEl) {
       const version = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '?';
-      configEl.textContent = `v${version} | CMS: ${config.cmsAddress} | Display: ${config.displayName || 'Unknown'} | HW: ${config.hardwareKey}`;
+      const buildDate = typeof __BUILD_DATE__ !== 'undefined' ? __BUILD_DATE__.replace('T', ' ').replace(/\.\d+Z$/, '') : '';
+      const versionStr = buildDate ? `v${version} (${buildDate})` : `v${version}`;
+      configEl.textContent = `${versionStr} | CMS: ${config.cmsAddress} | Display: ${config.displayName || 'Unknown'} | HW: ${config.hardwareKey}`;
     }
   }
 
