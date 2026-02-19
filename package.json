@@ -14,6 +14,7 @@
   },
   "dependencies": {
     "@xiboplayer/cache": "^0.2.0",
+    "@xiboplayer/sw": "^0.2.0",
     "@xiboplayer/core": "^0.2.0",
     "@xiboplayer/renderer": "^0.2.0",
     "@xiboplayer/schedule": "^0.2.0",
@@ -49,7 +50,8 @@
       "@xiboplayer/xmr": "link:../xiboplayer/packages/xmr",
       "@xiboplayer/xmds": "link:../xiboplayer/packages/xmds",
       "@xiboplayer/stats": "link:../xiboplayer/packages/stats",
-      "@xiboplayer/settings": "link:../xiboplayer/packages/settings"
+      "@xiboplayer/settings": "link:../xiboplayer/packages/settings",
+      "@xiboplayer/sw": "link:../xiboplayer/packages/sw"
     }
   }
 }

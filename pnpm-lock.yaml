@@ -14,6 +14,7 @@ overrides:
   '@xiboplayer/xmds': link:../xiboplayer/packages/xmds
   '@xiboplayer/stats': link:../xiboplayer/packages/stats
   '@xiboplayer/settings': link:../xiboplayer/packages/settings
+  '@xiboplayer/sw': link:../xiboplayer/packages/sw
 
 importers:
 
@@ -37,6 +38,9 @@ importers:
       '@xiboplayer/stats':
         specifier: link:../xiboplayer/packages/stats
         version: link:../xiboplayer/packages/stats
+      '@xiboplayer/sw':
+        specifier: link:../xiboplayer/packages/sw
+        version: link:../xiboplayer/packages/sw
       '@xiboplayer/utils':
         specifier: link:../xiboplayer/packages/utils
         version: link:../xiboplayer/packages/utils
