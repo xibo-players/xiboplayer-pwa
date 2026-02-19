@@ -136,14 +136,9 @@ export class DownloadOverlay {
     return html;
   }
 
-  private extractFilename(url: string): string {
-    try {
-      const urlObj = new URL(url);
-      const filename = urlObj.searchParams.get('file') || url.split('/').pop() || 'unknown';
-      return filename.length > 30 ? filename.substring(0, 27) + '...' : filename;
-    } catch {
-      return 'unknown';
-    }
+  private extractFilename(key: string): string {
+    // Key is now "type/id" (e.g. "media/5", "layout/12") — no URL parsing needed
+    return key || 'unknown';
   }
 
   private formatBytes(bytes: number): string {
