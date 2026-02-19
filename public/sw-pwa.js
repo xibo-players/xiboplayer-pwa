@@ -11,7 +11,8 @@
  * No HTTP 202 responses - always returns actual files or 404
  */
 
-import { DownloadManager } from '@xiboplayer/cache';
+import { DownloadManager, LayoutTaskBuilder, BARRIER } from '@xiboplayer/cache/download-manager';
+import { VERSION as CACHE_VERSION } from '@xiboplayer/cache';
 import {
   formatBytes,
   parseRangeHeader,
@@ -37,6 +38,19 @@ const STATIC_CONTENT_TYPES = {
   'eot': 'application/vnd.ms-fontobject',
   'svg': 'image/svg+xml'
 };
+
+/** Extract media IDs from XLF XML content */
+function extractMediaIdsFromXlf(xlfText, log) {
+  const ids = new Set();
+  // fileId is the CMS media library ID (id is just the widget sequence number)
+  const fileIdMatches = xlfText.matchAll(/<media[^>]+fileId="(\d+)"/g);
+  for (const m of fileIdMatches) ids.add(m[1]);
+  // background attribute on <layout> is also a media file ID
+  const bgMatches = xlfText.matchAll(/<layout[^>]+background="(\d+)"/g);
+  for (const m of bgMatches) ids.add(m[1]);
+  if (log) log.debug(`extractMediaIdsFromXlf: found ${ids.size} IDs: ${[...ids].join(', ')} (XLF ${xlfText.length} bytes)`);
+  return ids;
+}
 
 // Simple logger for Service Worker context
 // Uses console but can be configured via self.swLogLevel
@@ -170,8 +184,11 @@ const CHUNK_CONFIG = calculateChunkConfig();
 const CHUNK_SIZE = CHUNK_CONFIG.chunkSize;
 const CHUNK_STORAGE_THRESHOLD = CHUNK_CONFIG.threshold;
 const BLOB_CACHE_SIZE_MB = CHUNK_CONFIG.blobCacheSize;
-const CONCURRENT_DOWNLOADS = CHUNK_CONFIG.concurrency;  // Adaptive concurrency
-const CONCURRENT_CHUNKS = CHUNK_CONFIG.concurrency;  // Same as file concurrency
+// Flat queue: concurrency directly controls total HTTP connections.
+// Chromium limits 6 connections per host — the flat queue ensures every download
+// unit (full small file or single chunk) competes equally for connection slots,
+// avoiding the N×M explosion of the old two-layer approach.
+const CONCURRENT_DOWNLOADS = CHUNK_CONFIG.concurrency;
 
 // Static files to cache on install
 const STATIC_FILES = [
@@ -327,13 +344,14 @@ class CacheManager {
 
     this.log.info(`Storing as ${numChunks} chunks: ${cacheKey} (${formatBytes(totalSize)})`);
 
-    // Store metadata
+    // Store metadata (complete: false until all chunks are written)
     const metadata = {
       totalSize,
       chunkSize: CHUNK_SIZE,
       numChunks,
       contentType,
       chunked: true,
+      complete: false,
       createdAt: Date.now()
     };
 
@@ -365,6 +383,14 @@ class CacheManager {
         this.log.info(`Stored chunk ${i + 1}/${numChunks} (${formatBytes(chunkBlob.size)})`);
       }
     }
+
+    // All chunks stored — mark metadata complete
+    metadata.complete = true;
+    await this.cache.put(`${cacheKey}/metadata`, new Response(
+      JSON.stringify(metadata),
+      { headers: { 'Content-Type': 'application/json' } }
+    ));
+    metadataCache.set(cacheKey, metadata);
 
     this.log.info(`Chunked storage complete: ${cacheKey}`);
   }
@@ -971,84 +997,121 @@ class RequestHandler {
 
     this.log.debug(`Chunked range: bytes ${start}-${end}/${totalSize} (chunks ${startChunk}-${endChunk}, ${chunksNeeded} chunks)`);
 
-    // Load required chunks with coalescing + blob caching.
-    // Coalescing: if multiple Range requests need the same chunk simultaneously,
-    // they share one Cache API read via pendingChunkLoads Map.
-    const chunkBlobs = await Promise.all(
-      Array.from({ length: endChunk - startChunk + 1 }, (_, idx) => {
-        const i = startChunk + idx;
-        const chunkKey = `${cacheKey}/chunk-${i}`;
+    // Load a single chunk, with coalescing + blob caching.
+    // Returns the blob immediately if cached, or polls until available.
+    const loadChunk = (i) => {
+      const chunkKey = `${cacheKey}/chunk-${i}`;
 
-        return this.blobCache.get(chunkKey, () => {
-          // Coalesce: reuse in-flight Cache API read if another request is
-          // already loading this exact chunk
-          if (pendingChunkLoads.has(chunkKey)) {
-            return pendingChunkLoads.get(chunkKey);
+      return this.blobCache.get(chunkKey, () => {
+        // Coalesce: reuse in-flight Cache API read if another request is
+        // already loading this exact chunk
+        if (pendingChunkLoads.has(chunkKey)) {
+          return pendingChunkLoads.get(chunkKey);
+        }
+
+        const loadPromise = (async () => {
+          let chunkResponse = await this.cacheManager.getChunk(cacheKey, i);
+          if (chunkResponse) return await chunkResponse.blob();
+
+          // Chunk not yet stored — progressive download still running.
+          // Signal emergency priority: video is stalled waiting for this chunk.
+          // Moves it to front of queue with exclusive bandwidth.
+          log.info(`Chunk ${i}/${numChunks} not yet available for ${cacheKey}, signalling urgent...`);
+          {
+            const keyParts = cacheKey.split('/');
+            const urgentFileId = keyParts[keyParts.length - 1];
+            const urgentFileType = keyParts[keyParts.length - 2];
+            downloadManager.queue.urgentChunk(urgentFileType, urgentFileId, i);
           }
 
-          const loadPromise = (async () => {
-            let chunkResponse = null;
-            for (let retry = 0; retry < 120; retry++) {
-              chunkResponse = await this.cacheManager.getChunk(cacheKey, i);
-              if (chunkResponse) break;
-              // Chunk not yet stored — progressive download still running.
-              // 120 × 500ms = 60s max wait per chunk (50MB @ ~1MB/s worst case).
-              if (retry % 10 === 0) {
-                log.info(`Chunk ${i}/${numChunks} not yet available for ${cacheKey}, waiting... (attempt ${retry + 1})`);
-              }
-              await new Promise(resolve => setTimeout(resolve, 500));
+          // Poll with increasing backoff: 60 × 1s = 60s max wait.
+          for (let retry = 0; retry < 60; retry++) {
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            chunkResponse = await this.cacheManager.getChunk(cacheKey, i);
+            if (chunkResponse) {
+              log.info(`Chunk ${i}/${numChunks} arrived for ${cacheKey} after ${retry + 1}s`);
+              return await chunkResponse.blob();
             }
-            if (!chunkResponse) {
-              throw new Error(`Chunk ${i} not found for ${cacheKey} after retries`);
-            }
-            return await chunkResponse.blob();
-          })();
+          }
+          throw new Error(`Chunk ${i} not available for ${cacheKey} after 60s`);
+        })();
 
-          pendingChunkLoads.set(chunkKey, loadPromise);
-          loadPromise.finally(() => pendingChunkLoads.delete(chunkKey));
-          return loadPromise;
-        });
-      })
-    );
+        pendingChunkLoads.set(chunkKey, loadPromise);
+        loadPromise.finally(() => pendingChunkLoads.delete(chunkKey));
+        return loadPromise;
+      });
+    };
 
-    // Calculate slice offsets within the chunks
-    const firstChunkStart = start % chunkSize;
-    const lastChunkEnd = end % chunkSize;
-
-    // Extract the exact range from the chunks
-    let rangeData;
-
-    if (chunksNeeded === 1) {
-      // Range within single chunk
-      rangeData = chunkBlobs[0].slice(firstChunkStart, firstChunkStart + (end - start + 1));
-    } else {
-      // Range spans multiple chunks - concatenate
-      const parts = [];
-
-      // First chunk (partial)
-      parts.push(chunkBlobs[0].slice(firstChunkStart));
-
-      // Middle chunks (complete)
-      for (let i = 1; i < chunksNeeded - 1; i++) {
-        parts.push(chunkBlobs[i]);
+    // Fast path: try to load all chunks immediately (no waiting).
+    // If all are cached, serve the blob response synchronously.
+    const immediateBlobs = [];
+    let allImmediate = true;
+    for (let i = startChunk; i <= endChunk; i++) {
+      const chunkResponse = await this.cacheManager.getChunk(cacheKey, i);
+      if (chunkResponse) {
+        const chunkKey = `${cacheKey}/chunk-${i}`;
+        const blob = await this.blobCache.get(chunkKey, async () => await chunkResponse.blob());
+        immediateBlobs.push(blob);
+      } else {
+        allImmediate = false;
+        break;
       }
-
-      // Last chunk (partial)
-      if (chunksNeeded > 1) {
-        parts.push(chunkBlobs[chunksNeeded - 1].slice(0, lastChunkEnd + 1));
-      }
-
-      rangeData = new Blob(parts, { type: contentType });
     }
 
-    this.log.debug(`Serving chunked range: ${formatBytes(rangeData.size)} from ${chunksNeeded} chunk(s)`);
+    if (allImmediate && immediateBlobs.length === chunksNeeded) {
+      // All chunks available — serve immediately (common path for completed downloads)
+      const rangeData = extractRangeFromChunks(immediateBlobs, start, end, chunkSize);
+      this.log.debug(`Serving chunked range: ${formatBytes(rangeData.size)} from ${chunksNeeded} chunk(s)`);
 
-    return new Response(rangeData, {
+      return new Response(rangeData, {
+        status: 206,
+        statusText: 'Partial Content',
+        headers: {
+          'Content-Type': contentType,
+          'Content-Length': rangeData.size.toString(),
+          'Content-Range': `bytes ${start}-${end}/${totalSize}`,
+          'Accept-Ranges': 'bytes',
+          'Access-Control-Allow-Origin': '*'
+        }
+      });
+    }
+
+    // Slow path: some chunks still downloading. Return a 206 with a
+    // ReadableStream body so Chrome sees a "slow" response (buffering
+    // spinner) instead of an error. The stream pushes data as chunks arrive.
+    log.info(`Streaming response for ${cacheKey} bytes ${start}-${end} (waiting for chunks)`);
+    const cacheManager = this.cacheManager;
+    const blobCache = this.blobCache;
+    const rangeSize = end - start + 1;
+
+    const stream = new ReadableStream({
+      async start(controller) {
+        try {
+          // Load all required chunks (with waiting for missing ones)
+          const chunkBlobs = [];
+          for (let i = startChunk; i <= endChunk; i++) {
+            const blob = await loadChunk(i);
+            chunkBlobs.push(blob);
+          }
+
+          // Extract the exact byte range and push to stream
+          const rangeData = extractRangeFromChunks(chunkBlobs, start, end, chunkSize);
+          const buffer = await rangeData.arrayBuffer();
+          controller.enqueue(new Uint8Array(buffer));
+          controller.close();
+        } catch (err) {
+          log.error(`Stream error for ${cacheKey}: ${err.message}`);
+          controller.error(err);
+        }
+      }
+    });
+
+    return new Response(stream, {
       status: 206,
       statusText: 'Partial Content',
       headers: {
         'Content-Type': contentType,
-        'Content-Length': rangeData.size.toString(),
+        'Content-Length': rangeSize.toString(),
         'Content-Range': `bytes ${start}-${end}/${totalSize}`,
         'Accept-Ranges': 'bytes',
         'Access-Control-Allow-Origin': '*'
@@ -1093,7 +1156,7 @@ class MessageHandler {
         return { success: true };
 
       case 'DOWNLOAD_FILES':
-        return await this.handleDownloadFiles(data.files);
+        return await this.handleDownloadFiles(data);
 
       case 'PRIORITIZE_DOWNLOAD':
         return this.handlePrioritizeDownload(data.fileType, data.fileId);
@@ -1113,6 +1176,9 @@ class MessageHandler {
       case 'PRIORITIZE_LAYOUT_FILES':
         this.downloadManager.prioritizeLayoutFiles(data.mediaIds);
         return { success: true };
+
+      case 'URGENT_CHUNK':
+        return this.handleUrgentChunk(data.fileType, data.fileId, data.chunkIndex);
 
       default:
         this.log.warn('Unknown message type:', type);
@@ -1200,73 +1266,224 @@ class MessageHandler {
     return { success: true, found };
   }
 
-  async handleDownloadFiles(files) {
-    this.log.info('Enqueueing', files.length, 'files for download');
+  /**
+   * Handle URGENT_CHUNK — emergency priority for a stalled streaming chunk.
+   * External path (main thread can signal via postMessage).
+   */
+  handleUrgentChunk(fileType, fileId, chunkIndex) {
+    this.log.info('Urgent chunk request:', `${fileType}/${fileId}`, 'chunk', chunkIndex);
+    const acted = this.downloadManager.queue.urgentChunk(fileType, fileId, chunkIndex);
+    return { success: true, acted };
+  }
 
-    // Move layout XLFs to front (tiny, needed to parse media deps).
-    // Otherwise preserve client ordering — PlayerCore.prioritizeFilesByLayout()
-    // already tiers files: current-layout XLFs → other XLFs → resources → media.
-    // Re-sorting by size here would defeat layout-aware prioritisation.
-    files.sort((a, b) => {
-      if (a.type === 'layout' && b.type !== 'layout') return -1;
-      if (a.type !== 'layout' && b.type === 'layout') return 1;
-      return 0; // preserve client ordering for non-layout files
-    });
-
+  /**
+   * Handle DOWNLOAD_FILES with XLF-driven media resolution.
+   *
+   * Accepts { layoutOrder: number[], files: Array } from PlayerCore.
+   * Builds lookup maps from the flat CMS file list, fetches/parses XLFs to
+   * discover which media each layout needs, then enqueues per-layout chunks
+   * with barriers in playback order.
+   *
+   * @param {{ layoutOrder: number[], files: Array }} payload
+   */
+  async handleDownloadFiles({ layoutOrder, files }) {
+    const dm = this.downloadManager;
+    const queue = dm.queue;
     let enqueuedCount = 0;
     const enqueuedTasks = [];
 
-    for (const file of files) {
-      // Skip files with no path
-      if (!file.path || file.path === 'null' || file.path === 'undefined') {
-        this.log.debug('Skipping file with no path:', file.id);
-        continue;
+    // Build lookup maps from flat CMS file list
+    const xlfFiles = new Map();     // layoutId → file entry (for XLF download URL)
+    const resources = [];            // fonts, bundle.min.js etc.
+    const mediaFiles = new Map();    // mediaId (string) → file entry
+    for (const f of files) {
+      if (f.type === 'layout') {
+        xlfFiles.set(parseInt(f.id), f);
+      } else if (f.type === 'resource' || f.code === 'fonts.css'
+          || (f.path && (f.path.includes('bundle.min') || f.path.includes('fonts')))) {
+        resources.push(f);
+      } else {
+        mediaFiles.set(String(f.id), f);
       }
-
-      const cacheKey = `${BASE}/cache/${file.type}/${file.id}`;
-
-      // Check if already cached (supports both whole files and chunked storage)
-      const fileInfo = await this.cacheManager.fileExists(cacheKey);
-      if (fileInfo.exists) {
-        this.log.debug('File already cached:', cacheKey, fileInfo.chunked ? '(chunked)' : '(whole file)');
-
-        // Ensure widget resources (.js, .css, fonts) are in the static cache
-        // This handles files cached before the dual-cache deploy
-        await this.ensureStaticCacheEntry(file);
-
-        continue;
-      }
-
-      // Check if already downloading (prevent duplicates during collection cycles)
-      const activeTask = this.downloadManager.getTask(file.path);
-      if (activeTask) {
-        this.log.debug('File already downloading:', cacheKey, '- skipping duplicate');
-        continue;
-      }
-
-      // Enqueue for download - NOTE: DownloadTask now handles caching internally
-      // We need to wrap it to cache after download completes
-      const task = this.downloadManager.enqueue(file);
-      enqueuedTasks.push(this.cacheFileAfterDownload(task, file));
-      enqueuedCount++;
     }
 
-    this.log.info('Enqueued', enqueuedCount, 'files, waiting for downloads to start...');
+    this.log.info(`Download: ${layoutOrder.length} layouts, ${mediaFiles.size} media, ${resources.length} resources`);
 
-    // Wait for processQueue() to actually start downloads
-    await new Promise(resolve => setTimeout(resolve, 100));
+    // ── Step 1: Fetch + cache + parse all XLFs directly (parallel) ──
+    const layoutMediaMap = new Map(); // layoutId → Set<mediaId>
+    const xlfPromises = [];
+    for (const layoutId of layoutOrder) {
+      const xlfFile = xlfFiles.get(layoutId);
+      if (!xlfFile?.path) continue;
 
-    // Verify downloads started
-    const activeCount = this.downloadManager.queue.running;
-    const queuedCount = this.downloadManager.queue.queue.length;
-    this.log.info('Downloads started:', activeCount, 'active,', queuedCount, 'queued');
+      xlfPromises.push((async () => {
+        const cacheKey = `${BASE}/cache/layout/${layoutId}`;
+        const existing = await this.cacheManager.get(cacheKey);
+        let xlfText;
+        if (existing) {
+          xlfText = await existing.clone().text();
+        } else {
+          const resp = await fetch(xlfFile.path);
+          if (!resp.ok) { this.log.warn(`XLF fetch failed: ${layoutId} (${resp.status})`); return; }
+          const blob = await resp.blob();
+          await this.cacheManager.put(cacheKey, blob, 'text/xml');
+          this.log.info(`Fetched + cached XLF ${layoutId} (${blob.size} bytes)`);
+          // Notify clients so pending layouts can clear
+          const clients = await self.clients.matchAll();
+          clients.forEach(c => c.postMessage({ type: 'FILE_CACHED', fileId: String(layoutId), fileType: 'layout', size: blob.size }));
+          xlfText = await blob.text();
+        }
+        layoutMediaMap.set(layoutId, extractMediaIdsFromXlf(xlfText, this.log));
+      })());
+    }
+    // Also fetch XLFs NOT in layoutOrder (non-scheduled layouts, e.g. default)
+    for (const [layoutId, xlfFile] of xlfFiles) {
+      if (layoutOrder.includes(layoutId)) continue;
+      xlfPromises.push((async () => {
+        const cacheKey = `${BASE}/cache/layout/${layoutId}`;
+        const existing = await this.cacheManager.get(cacheKey);
+        if (!existing && xlfFile.path) {
+          const resp = await fetch(xlfFile.path);
+          if (resp.ok) {
+            const blob = await resp.blob();
+            await this.cacheManager.put(cacheKey, blob, 'text/xml');
+            this.log.info(`Fetched + cached XLF ${layoutId} (non-scheduled, ${blob.size} bytes)`);
+            const clients = await self.clients.matchAll();
+            clients.forEach(c => c.postMessage({ type: 'FILE_CACHED', fileId: String(layoutId), fileType: 'layout', size: blob.size }));
+            const xlfText = await blob.text();
+            layoutMediaMap.set(layoutId, extractMediaIdsFromXlf(xlfText, this.log));
+          }
+        } else if (existing) {
+          const xlfText = await existing.clone().text();
+          layoutMediaMap.set(layoutId, extractMediaIdsFromXlf(xlfText, this.log));
+        }
+      })());
+    }
+    await Promise.allSettled(xlfPromises);
+    this.log.info(`Parsed ${layoutMediaMap.size} XLFs`);
 
-    return {
-      success: true,
-      enqueuedCount,
-      activeCount,
-      queuedCount
-    };
+    // ── Step 2: Enqueue resources ──
+    const resourceBuilder = new LayoutTaskBuilder(queue);
+    for (const file of resources) {
+      const enqueued = await this._enqueueFile(dm, resourceBuilder, file, enqueuedTasks);
+      if (enqueued) enqueuedCount++;
+    }
+    const resourceTasks = await resourceBuilder.build();
+    if (resourceTasks.length > 0) {
+      resourceTasks.push(BARRIER);
+      queue.enqueueOrderedTasks(resourceTasks);
+    }
+
+    // ── Step 3: For each layout in play order, get media from XLF + enqueue ──
+    const claimed = new Set(); // Track media IDs already claimed by a layout
+
+    // Process scheduled layouts first (in play order), then non-scheduled
+    const allLayoutIds = [...layoutOrder, ...[...layoutMediaMap.keys()].filter(id => !layoutOrder.includes(id))];
+
+    for (const layoutId of allLayoutIds) {
+      const xlfMediaIds = layoutMediaMap.get(layoutId);
+      if (!xlfMediaIds) continue;
+
+      const matched = [];
+      for (const id of xlfMediaIds) {
+        if (claimed.has(id)) continue; // Already claimed by earlier layout
+        const file = mediaFiles.get(id);
+        if (file) {
+          matched.push(file);
+          claimed.add(id);
+        }
+      }
+      if (matched.length === 0) continue;
+
+      this.log.info(`Layout ${layoutId}: ${matched.length} media`);
+      matched.sort((a, b) => (a.size || 0) - (b.size || 0));
+      const builder = new LayoutTaskBuilder(queue);
+      for (const file of matched) {
+        const enqueued = await this._enqueueFile(dm, builder, file, enqueuedTasks);
+        if (enqueued) enqueuedCount++;
+      }
+      const orderedTasks = await builder.build();
+      if (orderedTasks.length > 0) {
+        orderedTasks.push(BARRIER);
+        queue.enqueueOrderedTasks(orderedTasks);
+      }
+    }
+
+    // Warn about unclaimed media (in CMS file list but not referenced by any XLF)
+    const unclaimed = [...mediaFiles.keys()].filter(id => !claimed.has(id));
+    if (unclaimed.length > 0) {
+      this.log.warn(`${unclaimed.length} media not in any XLF: ${unclaimed.join(', ')}`);
+    }
+
+    const activeCount = queue.running;
+    const queuedCount = queue.queue.length;
+    this.log.info('Downloads active:', activeCount, ', queued:', queuedCount);
+    return { success: true, enqueuedCount, activeCount, queuedCount };
+  }
+
+  /**
+   * Enqueue a single file for download (shared by phase 1 and phase 2).
+   * Handles cache checks, dedup, and incomplete chunked resume.
+   * @returns {boolean} true if file was enqueued (new download)
+   */
+  async _enqueueFile(dm, builder, file, enqueuedTasks) {
+    // Skip files with no path
+    if (!file.path || file.path === 'null' || file.path === 'undefined') {
+      this.log.debug('Skipping file with no path:', file.id);
+      return false;
+    }
+
+    const cacheKey = `${BASE}/cache/${file.type}/${file.id}`;
+
+    // Check if already cached (supports both whole files and chunked storage)
+    const fileInfo = await this.cacheManager.fileExists(cacheKey);
+    if (fileInfo.exists) {
+      // For chunked files, verify download actually completed
+      if (fileInfo.chunked && fileInfo.metadata && !fileInfo.metadata.complete) {
+        const { numChunks } = fileInfo.metadata;
+        const skipChunks = new Set();
+        for (let j = 0; j < numChunks; j++) {
+          const chunk = await this.cacheManager.getChunk(cacheKey, j);
+          if (chunk) skipChunks.add(j);
+        }
+
+        if (skipChunks.size === numChunks) {
+          this.log.info('All chunks present but metadata incomplete, marking complete:', cacheKey);
+          fileInfo.metadata.complete = true;
+          const cache = await caches.open(CACHE_NAME);
+          await cache.put(`${cacheKey}/metadata`, new Response(
+            JSON.stringify(fileInfo.metadata),
+            { headers: { 'Content-Type': 'application/json' } }
+          ));
+          metadataCache.set(cacheKey, fileInfo.metadata);
+          return false;
+        }
+
+        this.log.info(`Incomplete chunked download: ${skipChunks.size}/${numChunks} chunks cached, resuming:`, cacheKey);
+        file.skipChunks = skipChunks;
+      } else {
+        this.log.debug('File already cached:', cacheKey, fileInfo.chunked ? '(chunked)' : '(whole file)');
+        await this.ensureStaticCacheEntry(file);
+        return false;
+      }
+    }
+
+    // Check if already downloading
+    const stableKey = `${file.type}/${file.id}`;
+    const activeTask = dm.getTask(stableKey);
+    if (activeTask) {
+      this.log.debug('File already downloading:', stableKey, '- skipping duplicate');
+      return false;
+    }
+
+    const fileDownload = builder.addFile(file);
+    // Only set up caching callback for NEW files (not deduped)
+    if (fileDownload.state === 'pending') {
+      const cachePromise = this.cacheFileAfterDownload(fileDownload, file);
+      enqueuedTasks.push(cachePromise);
+      return true;
+    }
+    return false;
   }
 
   /**
@@ -1310,9 +1527,13 @@ class MessageHandler {
       // Also cache widget resources (.js, .css, fonts) for static serving
       this._cacheStaticResource(fileInfo, blob);
 
+      // Now safe to remove from active — file is in cache, won't be re-enqueued
+      this.downloadManager.queue.removeCompleted(`${fileInfo.type}/${fileInfo.id}`);
+
       return blob;
     } catch (error) {
       this.log.error('Failed to cache after download:', fileInfo.id, error);
+      this.downloadManager.queue.removeCompleted(`${fileInfo.type}/${fileInfo.id}`);
       throw error;
     }
   }
@@ -1339,6 +1560,7 @@ class MessageHandler {
       numChunks: expectedChunks,
       contentType,
       chunked: true,
+      complete: false,
       createdAt: Date.now()
     };
 
@@ -1437,10 +1659,29 @@ class MessageHandler {
           size: downloadedBlob.size || fileSize
         });
       });
+      this.downloadManager.queue.removeCompleted(`${fileInfo.type}/${fileInfo.id}`);
       return downloadedBlob;
     }
 
+    // URL expired mid-download: some chunks cached, but not all.
+    // Don't mark complete — next collection cycle resumes with fresh URLs.
+    if (task._urlExpired) {
+      log.warn(`URL expired mid-download, partial cache: ${cacheKey} (${chunksStored}/${expectedChunks} chunks stored)`);
+      this.downloadManager.queue.removeCompleted(`${fileInfo.type}/${fileInfo.id}`);
+      return new Blob([], { type: contentType });
+    }
+
     log.info(`Progressive download complete: ${cacheKey} (${chunksStored} chunks stored)`);
+
+    // Mark metadata as complete — this is the commit point.
+    // Until this flag is set, the file is considered incomplete and will be
+    // resumed (not re-downloaded) on the next collection cycle.
+    metadata.complete = true;
+    await cache.put(`${cacheKey}/metadata`, new Response(
+      JSON.stringify(metadata),
+      { headers: { 'Content-Type': 'application/json' } }
+    ));
+    metadataCache.set(cacheKey, metadata);
 
     // Notify client with final complete state
     const clients = await self.clients.matchAll();
@@ -1456,6 +1697,9 @@ class MessageHandler {
 
     // Remove from pending storage tracker (all chunks are already stored)
     pendingChunkStorage.delete(cacheKey);
+
+    // Now safe to remove from active — all chunks are in cache
+    this.downloadManager.queue.removeCompleted(`${fileInfo.type}/${fileInfo.id}`);
 
     return new Blob([], { type: contentType }); // Data is in cache, not in memory
   }
@@ -1563,7 +1807,7 @@ class MessageHandler {
 const downloadManager = new DownloadManager({
   concurrency: CONCURRENT_DOWNLOADS,
   chunkSize: CHUNK_SIZE,
-  chunksPerFile: CONCURRENT_CHUNKS
+  chunksPerFile: 2 // Max parallel chunks per file — prevents one large file from hogging all connections
 });
 
 const cacheManager = new CacheManager();
@@ -1591,7 +1835,7 @@ self.addEventListener('install', (event) => {
 
 // Activate and claim clients
 self.addEventListener('activate', (event) => {
-  log.info('Activating... Version:', SW_VERSION);
+  log.info('Activating... Version:', SW_VERSION, '| @xiboplayer/cache:', CACHE_VERSION);
   event.waitUntil(
     caches.keys().then((cacheNames) => {
       return Promise.all(
