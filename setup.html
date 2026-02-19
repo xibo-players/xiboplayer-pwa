@@ -365,7 +365,7 @@
 
   <script type="module">
     import { config, CmsApiClient } from '@xiboplayer/utils';
-    import { XmdsClient } from '@xiboplayer/xmds';
+    import { RestClient, XmdsClient } from '@xiboplayer/xmds';
 
     // ── Elements ──
     const form = document.getElementById('setup-form');
@@ -387,6 +387,22 @@
     let pollTimer = null;
     let countdownTimer = null;
     let pollSeconds = 15;
+
+    // ── Transport: try REST first, fall back to SOAP ──
+    let transport = null;
+    async function getTransport() {
+      if (transport) return transport;
+      try {
+        const rest = new RestClient(config);
+        await rest.registerDisplay();
+        console.log('[Setup] Using REST transport');
+        transport = rest;
+      } catch (e) {
+        console.log('[Setup] REST unavailable, using XMDS/SOAP:', e.message);
+        transport = new XmdsClient(config);
+      }
+      return transport;
+    }
 
     // ── Helpers ──
     function showPhase(phase) {
@@ -425,8 +441,8 @@
     // ── Authorization Polling ──
     async function checkAuthorization() {
       try {
-        const xmds = new XmdsClient(config);
-        const result = await xmds.registerDisplay();
+        const client = await getTransport();
+        const result = await client.registerDisplay();
         console.log('[Setup] Poll result:', result.code, result.message);
 
         if (result.code === 'READY') {
@@ -528,8 +544,10 @@
         submitBtn.textContent = 'Connecting...';
         submitBtn.disabled = true;
 
-        const xmds = new XmdsClient(config);
-        const result = await xmds.registerDisplay();
+        // Try REST first, fall back to SOAP
+        transport = null; // reset transport for fresh detection
+        const client = await getTransport();
+        const result = await client.registerDisplay();
 
         if (result.code === 'READY') {
           showSuccess();
@@ -539,8 +557,8 @@
           const autoAuthed = await tryAutoAuthorize(cmsAddress, hwKey);
 
           if (autoAuthed) {
-            // Verify with XMDS
-            const recheck = await xmds.registerDisplay();
+            // Verify registration
+            const recheck = await client.registerDisplay();
             if (recheck.code === 'READY') {
               showSuccess();
               return;
@@ -594,8 +612,8 @@
     if (config.isConfigured()) {
       (async () => {
         try {
-          const xmds = new XmdsClient(config);
-          const result = await xmds.registerDisplay();
+          const client = await getTransport();
+          const result = await client.registerDisplay();
           if (result.code === 'READY') {
             window.location.href = './index.html';
           } else {
