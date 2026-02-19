@@ -1268,7 +1268,7 @@ class PwaPlayer {
         const widgetId = mediaEl.getAttribute('id');
 
         if (widgetTypes.some(w => type?.includes(w))) {
-          const cacheKey = `/cache/widget/${layoutId}/${regionId}/${widgetId}`;
+          const cacheKey = `${PLAYER_BASE}/cache/widget/${layoutId}/${regionId}/${widgetId}`;
 
           fetchPromises.push(
             (async () => {
