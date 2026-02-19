@@ -458,6 +458,15 @@ class BlobCache {
   }
 
   /**
+   * Check if a key exists in memory cache (no Cache API fallback)
+   * @param {string} cacheKey - Cache key
+   * @returns {boolean}
+   */
+  has(cacheKey) {
+    return this.cache.has(cacheKey);
+  }
+
+  /**
    * Get blob from cache or load via loader function
    * @param {string} cacheKey - Cache key
    * @param {Function} loader - Async function that returns blob
@@ -976,19 +985,38 @@ class RequestHandler {
     // Parse Range header using utility
     const { start, end: parsedEnd } = parseRangeHeader(rangeHeader, totalSize);
 
-    // Cap open-ended ranges (e.g., "bytes=0-") to a single chunk for progressive streaming.
-    // The browser only needs a small probe initially — it will make follow-up range requests
-    // for the moov atom and actual streaming data. This prevents assembling 271MB into one
-    // response blob and enables instant playback even while chunks are still being stored.
+    // Cap open-ended ranges (e.g., "bytes=0-") to a single chunk for progressive streaming,
+    // but ONLY if some chunks are still missing. When all chunks from the start position
+    // to the end of file are already cached, serve the full range to avoid sequential
+    // chunk-by-chunk round-trips that can cause video stalls.
     let end = parsedEnd;
     const rangeStr = rangeHeader.replace(/bytes=/, '');
     const isOpenEnded = rangeStr.indexOf('-') === rangeStr.length - 1;
     if (isOpenEnded) {
       const startChunkIdx = Math.floor(start / chunkSize);
-      const cappedEnd = Math.min((startChunkIdx + 1) * chunkSize - 1, totalSize - 1);
-      if (cappedEnd < end) {
-        end = cappedEnd;
-        log.info(`Progressive streaming: capping bytes=${start}- to chunk ${startChunkIdx} (bytes ${start}-${end}/${totalSize})`);
+      const lastChunkIdx = numChunks - 1;
+
+      // Check if all remaining chunks are cached (quick BlobCache check first, then Cache API)
+      let allCached = true;
+      for (let i = startChunkIdx; i <= lastChunkIdx; i++) {
+        const chunkKey = `${cacheKey}/chunk-${i}`;
+        if (this.blobCache.has(chunkKey)) continue;
+        // Not in BlobCache — check Cache API
+        const resp = await this.cacheManager.getChunk(cacheKey, i);
+        if (!resp) {
+          allCached = false;
+          break;
+        }
+      }
+
+      if (!allCached) {
+        const cappedEnd = Math.min((startChunkIdx + 1) * chunkSize - 1, totalSize - 1);
+        if (cappedEnd < end) {
+          end = cappedEnd;
+          log.info(`Progressive streaming: capping bytes=${start}- to chunk ${startChunkIdx} (bytes ${start}-${end}/${totalSize})`);
+        }
+      } else {
+        log.info(`All chunks cached from ${startChunkIdx} to ${lastChunkIdx}, serving full range (bytes ${start}-${end}/${totalSize})`);
       }
     }
 
@@ -1825,9 +1853,26 @@ self.addEventListener('install', (event) => {
         log.info('Caching static files');
         return cache.addAll(STATIC_FILES);
       })
-    ]).then(() => {
+    ]).then(async () => {
       log.info('Cache initialized');
-      // Force immediate activation
+      // Only skipWaiting if this is a genuinely new version.
+      // Re-activating the same version kills in-flight fetch responses
+      // (e.g. video streams), causing playback stalls.
+      try {
+        const versionCache = await caches.open('xibo-sw-version');
+        const stored = await versionCache.match('version');
+        if (stored) {
+          const activeVersion = await stored.text();
+          if (activeVersion === SW_VERSION) {
+            log.info('Same version already active, skipping activation to preserve streams');
+            return; // Don't skipWaiting — let the existing SW keep serving
+          }
+          log.info('Version changed:', activeVersion, '→', SW_VERSION);
+        }
+      } catch (_) {
+        // Can't read version cache — proceed with skipWaiting
+      }
+      log.info('New version, activating immediately');
       return self.skipWaiting();
     })
   );
@@ -1840,15 +1885,17 @@ self.addEventListener('activate', (event) => {
     caches.keys().then((cacheNames) => {
       return Promise.all(
         cacheNames
-          .filter((name) => name.startsWith('xibo-') && name !== CACHE_NAME && name !== STATIC_CACHE)
+          .filter((name) => name.startsWith('xibo-') && name !== CACHE_NAME && name !== STATIC_CACHE && name !== 'xibo-sw-version')
           .map((name) => {
             log.info('Deleting old cache:', name);
             return caches.delete(name);
           })
       );
-    }).then(() => {
+    }).then(async () => {
+      // Store current version so future installs can detect same-version reloads
+      const versionCache = await caches.open('xibo-sw-version');
+      await versionCache.put('version', new Response(SW_VERSION));
       log.info('Taking control of all clients immediately');
-      // Force immediate control of all pages
       return self.clients.claim();
     }).then(async () => {
       // Signal to all clients that SW is ready to handle fetch events
