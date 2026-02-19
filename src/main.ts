@@ -694,6 +694,10 @@ class PwaPlayer {
         case 'T':
           this.timelineOverlay?.toggle();
           break;
+        case 'd':
+        case 'D':
+          this.downloadOverlay?.toggle();
+          break;
       }
     });
 
