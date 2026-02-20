@@ -1,6 +1,6 @@
 {
   "name": "@xiboplayer/pwa",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Lightweight PWA Xibo Player with RendererLite",
   "type": "module",
   "files": [
@@ -39,4 +39,5 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/xibo-players/xiboplayer-pwa.git"
-  }}
+  }
+}
