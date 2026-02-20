@@ -189,6 +189,10 @@ class PwaPlayer {
         if (scheduleManager?.setLocation) {
           scheduleManager.setLocation(lat, lng);
         }
+      } else if (this.core.requestGeoLocation) {
+        // No CMS coordinates — try browser Geolocation API as fallback
+        log.info('No CMS coordinates, requesting browser geolocation...');
+        this.core.requestGeoLocation();
       }
     });
 
