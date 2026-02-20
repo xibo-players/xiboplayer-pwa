@@ -15,6 +15,7 @@
   "dependencies": {
     "@xiboplayer/cache": "^0.3.0",
     "@xiboplayer/core": "^0.3.0",
+    "@xiboplayer/crypto": "^0.3.0",
     "@xiboplayer/renderer": "^0.3.0",
     "@xiboplayer/schedule": "^0.3.0",
     "@xiboplayer/settings": "^0.3.0",
