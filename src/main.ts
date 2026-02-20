@@ -706,6 +706,13 @@ class PwaPlayer {
           }
           this.downloadOverlay.toggle();
           break;
+        case 'v':
+        case 'V': {
+          const videos = document.querySelectorAll('video');
+          const show = videos.length > 0 && !videos[0].controls;
+          videos.forEach(v => v.controls = show);
+          break;
+        }
       }
     });
 
