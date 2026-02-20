@@ -659,39 +659,6 @@ class PwaPlayer {
     // Keyboard / presenter remote (clicker) controls
     document.addEventListener('keydown', (e: KeyboardEvent) => {
       switch (e.key) {
-        case 'ArrowRight':
-        case 'PageDown':
-        case 'MediaTrackNext':
-          if (this.core.peekNextLayout()) {
-            log.info('[Remote] Next layout');
-            this.core.advanceToNextLayout();
-          }
-          break;
-        case 'ArrowLeft':
-        case 'PageUp':
-        case 'MediaTrackPrevious':
-          log.info('[Remote] Previous layout');
-          this.core.advanceToPreviousLayout();
-          break;
-        case ' ':
-          e.preventDefault(); // prevent scroll
-          if (this.renderer._paused) {
-            log.info('[Remote] Resume');
-            this.renderer.resume();
-          } else {
-            log.info('[Remote] Pause');
-            this.renderer.pause();
-          }
-          break;
-        case 'MediaPlayPause':
-          if (this.renderer._paused) {
-            log.info('[Remote] Resume (MediaPlayPause)');
-            this.renderer.resume();
-          } else {
-            log.info('[Remote] Pause (MediaPlayPause)');
-            this.renderer.pause();
-          }
-          break;
         case 't':
         case 'T':
           if (!this.timelineOverlay) {

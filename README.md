@@ -14,12 +14,19 @@ Lightweight PWA Xibo digital signage player built on the [`@xiboplayer` SDK](htt
 - **Campaign scheduling** — priority-based campaigns, dayparting, interrupts, and overlays
 - **Real-time CMS commands** — collectNow, screenshot, changeLayout, overlayLayout via XMR WebSocket
 - **Proof of play** — per-layout and per-widget duration tracking with stats reporting
-- **Timeline overlay** — toggleable debug overlay showing upcoming schedule (press `D` to toggle)
 - **Screenshots** — html2canvas-based capture for non-Electron browsers, Electron uses `capturePage()`
-- **Keyboard and presenter remote controls** — interactive actions via touch, click, and keyboard
-- **Download overlay** — hover bottom-right corner to see download progress
 - **Screen Wake Lock** — prevents display from sleeping during playback
 - **Configurable log levels** — `DEBUG`, `INFO`, `WARNING`, `ERROR`, `NONE` (via URL param or CMS settings)
+
+## Keyboard Shortcuts
+
+All overlays and controls are hidden by default for clean kiosk operation.
+
+| Key | Action |
+|-----|--------|
+| `T` | Toggle timeline overlay — shows upcoming scheduled layouts |
+| `D` | Toggle download overlay — shows media download progress |
+| `V` | Toggle video controls — show/hide native browser controls on all videos |
 
 ## Service Worker Architecture
 
