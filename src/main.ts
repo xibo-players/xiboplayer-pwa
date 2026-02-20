@@ -217,8 +217,10 @@ class PwaPlayer {
       log.info('Download overlay enabled (hover bottom-right corner)');
     }
 
-    // Initialize timeline overlay (toggleable with T key)
-    this.timelineOverlay = new TimelineOverlay(isTimelineVisible());
+    // Timeline overlay — created on first T key press (or if previously visible)
+    if (isTimelineVisible()) {
+      this.timelineOverlay = new TimelineOverlay(true);
+    }
 
     // Request Screen Wake Lock to prevent display sleep
     await this.requestWakeLock();
@@ -692,11 +694,17 @@ class PwaPlayer {
           break;
         case 't':
         case 'T':
-          this.timelineOverlay?.toggle();
+          if (!this.timelineOverlay) {
+            this.timelineOverlay = new TimelineOverlay(true);
+          }
+          this.timelineOverlay.toggle();
           break;
         case 'd':
         case 'D':
-          this.downloadOverlay?.toggle();
+          if (!this.downloadOverlay) {
+            this.downloadOverlay = new DownloadOverlay({ enabled: true, autoHide: false });
+          }
+          this.downloadOverlay.toggle();
           break;
       }
     });

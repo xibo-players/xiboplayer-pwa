@@ -237,6 +237,6 @@ export function getDefaultOverlayConfig(): DownloadOverlayConfig {
     return { enabled: savedPref === 'true' };
   }
 
-  // Default: always enable overlay (autoHide hides it when no downloads active)
-  return { enabled: true, autoHide: true };
+  // Default: disabled — toggle with D key or ?showDownloads=1
+  return { enabled: false };
 }
