@@ -879,6 +879,24 @@ class PwaPlayer {
         return { status: 200, body: responseBody };
       }
 
+      case '/criteria': {
+        // Return display properties/criteria that widgets can query
+        // Used by widgets to adapt content based on display characteristics
+        return {
+          status: 200,
+          body: JSON.stringify({
+            displayId: config.displayId,
+            hardwareKey: config.hardwareKey,
+            displayName: config.displayName,
+            width: window.innerWidth,
+            height: window.innerHeight,
+            latitude: config.latitude || null,
+            longitude: config.longitude || null,
+            playerType: 'pwa'
+          })
+        };
+      }
+
       default:
         return { status: 404, body: JSON.stringify({ error: 'Unknown IC route' }) };
     }
