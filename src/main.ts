@@ -580,6 +580,12 @@ class PwaPlayer {
       }
     });
 
+    // Scheduled commands (#17) — execute commands whose scheduled time has arrived
+    this.core.on('scheduled-command', (command: any) => {
+      log.info(`Scheduled command: ${command.code}`);
+      this.core.executeCommand(command.code);
+    });
+
     // Display settings events
     if (this.displaySettings) {
       this.displaySettings.on('interval-changed', (newInterval: number) => {
@@ -981,6 +987,35 @@ class PwaPlayer {
 
         default:
           log.warn('Unknown action type:', actionType);
+      }
+
+      // Record interaction event for proof of play (#19)
+      if (this.statsCollector) {
+        this.statsCollector.recordEvent('touch', this.core.getCurrentLayoutId(), data.targetId || null, this.currentScheduleId);
+      }
+    });
+
+    // Widget duration webhooks (#16) — fire HTTP POST when widget duration expires
+    this.renderer.on('widgetAction', (data: any) => {
+      if (data.type === 'durationEnd' && data.url) {
+        log.info(`Widget ${data.widgetId} duration ended, calling webhook: ${data.url}`);
+
+        // Record webhook event for proof of play (#19)
+        if (this.statsCollector) {
+          this.statsCollector.recordEvent('webhook', data.layoutId, data.widgetId, this.currentScheduleId);
+        }
+
+        fetch(data.url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            widgetId: data.widgetId,
+            layoutId: data.layoutId,
+            regionId: data.regionId,
+            event: 'durationEnd',
+            timestamp: new Date().toISOString()
+          })
+        }).catch(err => log.warn('Webhook failed (non-critical):', err));
       }
     });
 
