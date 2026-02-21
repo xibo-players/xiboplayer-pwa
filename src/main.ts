@@ -25,7 +25,7 @@ const log = createLogger('PWA');
 const PLAYER_BASE = new URL('./', window.location.href).pathname.replace(/\/$/, '');
 
 // Import core modules (will be loaded at runtime)
-let cacheManager: any;
+let cacheWidgetHtml: any;
 let scheduleManager: any;
 let config: any;
 let RestClient: any;
@@ -90,10 +90,6 @@ class PwaPlayer {
         log.warn('Service Worker registration failed:', error);
       }
     }
-
-    // Initialize cache
-    log.info('Initializing cache...');
-    await cacheManager.init();
 
     // Initialize CacheProxy (Service Worker only - waits for SW to be ready)
     log.info('Initializing CacheProxy...');
@@ -290,7 +286,7 @@ class PwaPlayer {
       // @ts-ignore
       const rendererModule = await import('@xiboplayer/renderer');
 
-      cacheManager = cacheModule.cacheManager;
+      cacheWidgetHtml = cacheModule.cacheWidgetHtml;
       scheduleManager = scheduleModule.scheduleManager;
       config = configModule.config;
       RestClient = xmdsModule.RestClient;
@@ -567,9 +563,6 @@ class PwaPlayer {
         const cacheNames = await caches.keys();
         await Promise.all(cacheNames.map(name => caches.delete(name)));
         log.info(`Purged ${cacheNames.length} caches`);
-
-        // Re-initialize cache after purge
-        await cacheManager.init();
       } catch (error) {
         log.error('Cache purge failed:', error);
       }
@@ -1018,7 +1011,7 @@ class PwaPlayer {
         log.info(`Preloading next layout ${nextLayoutId}...`);
 
         // Get XLF from cache
-        const xlfBlob = await cacheManager.getCachedFile('layout', nextLayoutId);
+        const xlfBlob = await cacheProxy.getFile('layout', nextLayoutId);
         if (!xlfBlob) {
           log.debug(`Layout ${nextLayoutId} XLF not cached, skipping preload`);
           return;
@@ -1077,7 +1070,7 @@ class PwaPlayer {
     this.preparingLayoutId = layoutId;
     try {
       // Get XLF from cache
-      const xlfBlob = await cacheManager.getCachedFile('layout', layoutId);
+      const xlfBlob = await cacheProxy.getFile('layout', layoutId);
       if (!xlfBlob) {
         log.info('Layout not in cache yet, marking as pending:', layoutId);
         // Mark layout as pending so when it downloads, we'll retry
@@ -1182,15 +1175,12 @@ class PwaPlayer {
         }
 
         // File exists (either whole file or chunks) - now validate it
-        // Check for whole-file storage first
-        const response = await cacheManager.getCachedResponse('media', mediaId);
+        // Check for chunked storage via metadata
+        const cache = await caches.open('xibo-media-v1');
+        const metadataResponse = await cache.match(`${PLAYER_BASE}/cache/media/${mediaId}/metadata`);
 
-        if (!response) {
-          // Chunked storage - check readiness based on file type
-          const cache = await caches.open('xibo-media-v1');
-          const metadataResponse = await cache.match(`${PLAYER_BASE}/cache/media/${mediaId}/metadata`);
-
-          if (metadataResponse) {
+        if (metadataResponse) {
+          {
             const metadataText = await metadataResponse.text();
             const metadata = JSON.parse(metadataText);
             const sizeMB = (metadata.totalSize / 1024 / 1024).toFixed(1);
@@ -1228,17 +1218,17 @@ class PwaPlayer {
           }
         }
 
-        // Validate cached file (detect corrupted entries)
+        // Validate cached whole file (detect corrupted entries)
+        const cacheKey = `${PLAYER_BASE}/cache/media/${mediaId}`;
+        const response = await cache.match(cacheKey);
+        if (!response) continue; // Shouldn't happen — hasFile was true
+
         const contentType = response.headers.get('Content-Type') || '';
         const blob = await response.blob();
 
         // Check for bad cache
         if (contentType === 'text/plain' || blob.size < 100) {
           log.warn(`Media ${mediaId} corrupted (${contentType}, ${blob.size} bytes) - will re-download`);
-
-          // Delete bad cache entry
-          const cache = await caches.open('xibo-media-v1');
-          const cacheKey = `${PLAYER_BASE}/cache/media/${mediaId}`;
           await cache.delete(cacheKey);
 
           return false;
@@ -1291,7 +1281,7 @@ class PwaPlayer {
                   log.debug(`Using cached widget HTML for ${type} ${widgetId}`);
                 } else {
                   html = await this.xmds.getResource(layoutId, regionId, widgetId);
-                  await cacheManager.cacheWidgetHtml(layoutId, regionId, widgetId, html);
+                  await cacheWidgetHtml(layoutId, regionId, widgetId, html);
                   log.debug(`Retrieved widget HTML for ${type} ${widgetId}`);
                 }
 
@@ -1331,7 +1321,7 @@ class PwaPlayer {
     for (const layoutId of this.scheduledLayoutIds) {
 
       try {
-        const xlfBlob = await cacheManager.getCachedFile('layout', layoutId);
+        const xlfBlob = await cacheProxy.getFile('layout', layoutId);
         if (!xlfBlob) continue;
 
         const xlfXml = await xlfBlob.text();
