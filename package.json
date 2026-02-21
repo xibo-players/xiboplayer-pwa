@@ -41,19 +41,5 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/xibo-players/xiboplayer-pwa.git"
-  },
-  "pnpm": {
-    "overrides": {
-      "@xiboplayer/utils": "link:../xiboplayer/packages/utils",
-      "@xiboplayer/cache": "link:../xiboplayer/packages/cache",
-      "@xiboplayer/renderer": "link:../xiboplayer/packages/renderer",
-      "@xiboplayer/schedule": "link:../xiboplayer/packages/schedule",
-      "@xiboplayer/xmds": "link:../xiboplayer/packages/xmds",
-      "@xiboplayer/xmr": "link:../xiboplayer/packages/xmr",
-      "@xiboplayer/core": "link:../xiboplayer/packages/core",
-      "@xiboplayer/stats": "link:../xiboplayer/packages/stats",
-      "@xiboplayer/settings": "link:../xiboplayer/packages/settings",
-      "@xiboplayer/sw": "link:../xiboplayer/packages/sw"
-    }
   }
 }
