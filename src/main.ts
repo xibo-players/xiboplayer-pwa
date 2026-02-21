@@ -198,7 +198,7 @@ class PwaPlayer {
 
     // Online/offline event listeners for seamless offline mode
     window.addEventListener('online', () => {
-      console.log('[PWA] Browser reports online — triggering immediate collection');
+      log.info('Browser reports online — triggering immediate collection');
       this.updateStatus('Back online, syncing...');
       this.removeOfflineIndicator();
       this.core.collectNow().catch((error: any) => {
@@ -206,7 +206,7 @@ class PwaPlayer {
       });
     });
     window.addEventListener('offline', () => {
-      console.warn('[PWA] Browser reports offline — continuing playback with cached data');
+      log.warn('Browser reports offline — continuing playback with cached data');
       this.updateStatus('Offline mode — using cached content');
       this.showOfflineIndicator();
     });
@@ -519,10 +519,7 @@ class PwaPlayer {
 
     this.core.on('xmr-misconfigured', (info: { reason: string; url?: string; message: string }) => {
       log.warn(`XMR misconfigured (${info.reason}): ${info.message}`);
-      console.warn(
-        `%c[XMR] ${info.message}`,
-        'background: #ff9800; color: #000; padding: 4px 8px; font-weight: bold;'
-      );
+      log.warn(`XMR misconfigured: ${info.message}`);
     });
 
     // React to CMS log level changes — toggle download overlay at runtime
