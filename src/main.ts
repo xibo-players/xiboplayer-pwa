@@ -1493,7 +1493,7 @@ class PwaPlayer {
     if (!this.logReporter) return;
 
     try {
-      const logs = await this.logReporter.getLogsForSubmission(100);
+      const logs = await this.logReporter.getLogsForSubmission();
 
       if (logs.length === 0) {
         log.debug('No logs to submit');
