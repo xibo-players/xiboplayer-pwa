@@ -1377,9 +1377,6 @@ class PwaPlayer {
     const parser = new DOMParser();
     const doc = parser.parseFromString(xlfXml, 'text/xml');
 
-    const widgetTypes = ['clock', 'calendar', 'weather', 'currencies', 'stocks',
-                        'twitter', 'global', 'embedded', 'text', 'ticker'];
-
     const fetchPromises: Promise<void>[] = [];
 
     for (const regionEl of doc.querySelectorAll('region')) {
@@ -1388,8 +1385,11 @@ class PwaPlayer {
       for (const mediaEl of regionEl.querySelectorAll('media')) {
         const type = mediaEl.getAttribute('type');
         const widgetId = mediaEl.getAttribute('id');
+        const render = mediaEl.getAttribute('render');
 
-        if (widgetTypes.some(w => type?.includes(w))) {
+        // XLF render="html" means CMS provides pre-rendered HTML via getResource.
+        // render="native" means player handles the media directly (video, image, audio).
+        if (render === 'html') {
           const cacheKey = `${PLAYER_BASE}/cache/widget/${layoutId}/${regionId}/${widgetId}`;
 
           fetchPromises.push(
