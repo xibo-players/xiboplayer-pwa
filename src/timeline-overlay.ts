@@ -6,12 +6,18 @@
  * Positioned bottom-left (download overlay is top-left).
  */
 
+interface HiddenLayout {
+  file: string;
+  priority: number;
+}
+
 interface TimelineEntry {
   layoutFile: string;
   startTime: Date;
   endTime: Date;
   duration: number;
   isDefault: boolean;
+  hidden?: HiddenLayout[];
 }
 
 export class TimelineOverlay {
@@ -134,6 +140,10 @@ export class TimelineOverlay {
       html += `<div data-layout-id="${layoutId}" style="${borderLeft} ${color} ${cursor} margin-bottom: 0.3vh; font-family: monospace; font-size: 1.3vw; line-height: 1.5; white-space: nowrap;" ${hover}>`;
       html += `${marker}${startStr}–${endStr}  #${layoutId}  ${durStr}`;
       if (entry.isDefault) html += ' <span style="color: #888;">[def]</span>';
+      if (entry.hidden && entry.hidden.length > 0) {
+        const hiddenIds = entry.hidden.map(h => `#${h.file.replace('.xlf', '')} (p${h.priority})`).join(', ');
+        html += ` <span style="color: #ff9944; font-size: 1.1vw;" title="Hidden: ${hiddenIds}">&#9888; ${entry.hidden.length}</span>`;
+      }
       html += '</div>';
     }
 
