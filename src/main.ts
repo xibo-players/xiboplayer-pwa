@@ -58,6 +58,7 @@ class PwaPlayer {
   private _screenshotInFlight = false; // Concurrency guard — one capture at a time
   private _html2canvasMod: any = null; // Pre-loaded module
   private _wakeLock: any = null; // Screen Wake Lock sentinel
+  private _currentLayoutEnableStat: boolean = true; // enableStat from current layout XLF
   private _probeTimer: any = null; // Debounce timer for duration probing
 
   async init() {
@@ -513,6 +514,7 @@ class PwaPlayer {
         'COLLECTION_FAILED',
         `Collection cycle failed: ${error?.message || error}`
       );
+      this.submitFault('COLLECTION_FAILED', `Collection cycle failed: ${error?.message || error}`);
     });
 
     this.core.on('xmr-connected', (url: string) => {
@@ -581,6 +583,7 @@ class PwaPlayer {
           'COMMAND_FAILED',
           `Command ${result.code} failed: ${result.reason || 'unknown'}`
         );
+        this.submitFault('COMMAND_FAILED', `Command ${result.code} failed: ${result.reason || 'unknown'}`);
       }
     });
 
@@ -779,6 +782,11 @@ class PwaPlayer {
           data.code || 'WIDGET_FAULT',
           data.reason || 'Widget reported fault'
         );
+        this.submitFault(data.code || 'WIDGET_FAULT', data.reason || 'Widget reported fault', {
+          layoutId: data.layoutId,
+          regionId: data.regionId,
+          widgetId: data.widgetId
+        });
         return { status: 200, body: 'OK' };
       }
 
@@ -844,6 +852,9 @@ class PwaPlayer {
       this.updateStatus(`Playing layout ${layoutId}`);
       this.core.setCurrentLayout(layoutId);
 
+      // Store layout-level enableStat for use in layoutEnd
+      this._currentLayoutEnableStat = _layout?.enableStat !== false;
+
       // Update timeline overlay highlight
       this.timelineOverlay?.update(null, layoutId);
 
@@ -853,8 +864,8 @@ class PwaPlayer {
         this.core.recordLayoutDuration(String(layoutId), _layout.duration);
       }
 
-      // Track stats: start layout
-      if (this.statsCollector) {
+      // Track stats: start layout (only if enableStat is not disabled)
+      if (this.statsCollector && this._currentLayoutEnableStat) {
         this.statsCollector.startLayout(layoutId, this.currentScheduleId).catch((err: any) => {
           log.error('Failed to start layout stat:', err);
         });
@@ -869,8 +880,8 @@ class PwaPlayer {
       // filter the layout mid-playback (e.g., 200s video cut at 168s).
       scheduleManager?.recordPlay(layoutId.toString());
 
-      // Track stats: end layout
-      if (this.statsCollector) {
+      // Track stats: end layout (only if enableStat was not disabled)
+      if (this.statsCollector && this._currentLayoutEnableStat) {
         this.statsCollector.endLayout(layoutId, this.currentScheduleId).catch((err: any) => {
           log.error('Failed to end layout stat:', err);
         });
@@ -901,8 +912,8 @@ class PwaPlayer {
       const { widgetId, layoutId, mediaId } = data;
       log.debug('Widget started:', data.type, widgetId, 'media:', mediaId);
 
-      // Track stats: start widget/media
-      if (this.statsCollector && mediaId) {
+      // Track stats: start widget/media (only if enableStat is not disabled)
+      if (this.statsCollector && mediaId && data.enableStat !== false) {
         this.statsCollector.startWidget(mediaId, layoutId, this.currentScheduleId).catch((err: any) => {
           log.error('Failed to start widget stat:', err);
         });
@@ -913,8 +924,8 @@ class PwaPlayer {
       const { widgetId, layoutId, mediaId } = data;
       log.debug('Widget ended:', data.type, widgetId, 'media:', mediaId);
 
-      // Track stats: end widget/media
-      if (this.statsCollector && mediaId) {
+      // Track stats: end widget/media (only if enableStat is not disabled)
+      if (this.statsCollector && mediaId && data.enableStat !== false) {
         this.statsCollector.endWidget(mediaId, layoutId, this.currentScheduleId).catch((err: any) => {
           log.error('Failed to end widget stat:', err);
         });
@@ -930,6 +941,11 @@ class PwaPlayer {
         error.type || 'RENDERER_ERROR',
         `Renderer error: ${error.message || error.type} (layout ${error.layoutId || 'unknown'})`
       );
+      this.submitFault(error.type || 'RENDERER_ERROR', `Renderer error: ${error.message || error.type}`, {
+        layoutId: error.layoutId,
+        regionId: error.regionId,
+        widgetId: error.widgetId
+      });
     });
 
     // Handle interactive actions from touch/click and keyboard triggers
@@ -1110,6 +1126,9 @@ class PwaPlayer {
         'LAYOUT_LOAD_FAILED',
         `Failed to prepare layout ${layoutId}: ${error?.message || error}`
       );
+      this.submitFault('LAYOUT_LOAD_FAILED', `Failed to prepare layout ${layoutId}: ${error?.message || error}`, {
+        layoutId
+      });
     } finally {
       this.preparingLayoutId = null;
     }
@@ -1470,6 +1489,25 @@ class PwaPlayer {
     } catch (error) {
       log.error('Failed to submit logs:', error);
     }
+  }
+
+  /**
+   * Submit a fault report to CMS for the player_faults dashboard.
+   * Runs alongside logReporter.reportFault() which feeds the log dashboard.
+   */
+  private submitFault(code: string, reason: string, details?: { layoutId?: number; regionId?: string; widgetId?: string }) {
+    if (!this.xmds) return;
+
+    const fault = JSON.stringify([{
+      code,
+      reason,
+      date: new Date().toISOString().replace('T', ' ').substring(0, 19),
+      ...details
+    }]);
+
+    this.xmds.reportFaults(fault).catch((err: any) => {
+      log.debug('reportFaults failed (non-critical):', err);
+    });
   }
 
   /**
