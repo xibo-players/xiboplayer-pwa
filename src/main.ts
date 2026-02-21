@@ -62,6 +62,8 @@ class PwaPlayer {
   private syncManager: any = null; // Multi-display sync coordinator
   private _currentLayoutEnableStat: boolean = true; // enableStat from current layout XLF
   private _probeTimer: any = null; // Debounce timer for duration probing
+  private _pendingFollowerStats: any[] | null = null; // In-flight stats delegated to lead
+  private _pendingFollowerLogs: any[] | null = null; // In-flight logs delegated to lead
 
   async init() {
     log.info('Initializing player with RendererLite + PlayerCore...');
@@ -428,6 +430,42 @@ class PwaPlayer {
           // Resume paused video in the specified region
           log.info(`[Sync] Video start: layout ${layoutId} region ${regionId}`);
           this.renderer.resumeRegionMedia?.(regionId);
+        },
+        // Lead: follower delegated stats — submit on their behalf
+        onStatsReport: async (followerId: string, statsXml: string, ack: () => void) => {
+          log.info(`[Sync] Submitting stats for follower ${followerId}`);
+          try {
+            const success = await this.xmds.submitStats(statsXml, followerId);
+            if (success) ack();
+          } catch (err: any) {
+            log.warn(`[Sync] Stats submission failed for follower ${followerId}:`, err);
+          }
+        },
+        // Lead: follower delegated logs — submit on their behalf
+        onLogsReport: async (followerId: string, logsXml: string, ack: () => void) => {
+          log.info(`[Sync] Submitting logs for follower ${followerId}`);
+          try {
+            const success = await this.xmds.submitLog(logsXml, followerId);
+            if (success) ack();
+          } catch (err: any) {
+            log.warn(`[Sync] Log submission failed for follower ${followerId}:`, err);
+          }
+        },
+        // Follower: lead confirmed our stats were submitted
+        onStatsAck: async (_displayId: string) => {
+          log.info('[Sync] Lead confirmed stats submission');
+          if (this._pendingFollowerStats && this.statsCollector) {
+            await this.statsCollector.clearSubmittedStats(this._pendingFollowerStats);
+            this._pendingFollowerStats = null;
+          }
+        },
+        // Follower: lead confirmed our logs were submitted
+        onLogsAck: async (_displayId: string) => {
+          log.info('[Sync] Lead confirmed logs submission');
+          if (this._pendingFollowerLogs && this.logReporter) {
+            await this.logReporter.clearSubmittedLogs(this._pendingFollowerLogs);
+            this._pendingFollowerLogs = null;
+          }
         },
       });
       this.core.setSyncManager(this.syncManager);
@@ -1377,9 +1415,6 @@ class PwaPlayer {
     const parser = new DOMParser();
     const doc = parser.parseFromString(xlfXml, 'text/xml');
 
-    const widgetTypes = ['clock', 'calendar', 'weather', 'currencies', 'stocks',
-                        'twitter', 'global', 'embedded', 'text', 'ticker'];
-
     const fetchPromises: Promise<void>[] = [];
 
     for (const regionEl of doc.querySelectorAll('region')) {
@@ -1388,8 +1423,11 @@ class PwaPlayer {
       for (const mediaEl of regionEl.querySelectorAll('media')) {
         const type = mediaEl.getAttribute('type');
         const widgetId = mediaEl.getAttribute('id');
+        const render = mediaEl.getAttribute('render');
 
-        if (widgetTypes.some(w => type?.includes(w))) {
+        // XLF render="html" means CMS provides pre-rendered HTML via getResource.
+        // render="native" means player handles the media directly (video, image, audio).
+        if (render === 'html') {
           const cacheKey = `${PLAYER_BASE}/cache/widget/${layoutId}/${regionId}/${widgetId}`;
 
           fetchPromises.push(
@@ -1540,6 +1578,12 @@ class PwaPlayer {
       return;
     }
 
+    // Guard: don't start a new delegation while one is in-flight
+    if (this._pendingFollowerStats !== null) {
+      log.debug('Stats delegation in-flight, skipping');
+      return;
+    }
+
     try {
       // Get stats ready for submission (up to 50 at a time)
       // Use aggregation level from CMS settings if available
@@ -1553,10 +1597,23 @@ class PwaPlayer {
         return;
       }
 
-      log.info(`Submitting ${stats.length} proof of play stats...`);
-
       // Format stats as XML
       const statsXml = formatStats(stats);
+
+      // Follower with live lead: delegate stats via BroadcastChannel
+      if (this.syncManager && !this.syncManager.isLead && this._syncLeadAlive()) {
+        log.info(`[Sync] Delegating ${stats.length} stats to lead`);
+        this._pendingFollowerStats = stats;
+        this.syncManager.reportStats(statsXml);
+        return;
+      }
+
+      // Lead, standalone, or lead-dead follower: submit directly
+      if (this.syncManager && !this.syncManager.isLead) {
+        log.warn('[Sync] Lead not alive, submitting stats directly');
+      }
+
+      log.info(`Submitting ${stats.length} proof of play stats...`);
 
       // Submit to CMS via XMDS
       const success = await this.xmds.submitStats(statsXml);
@@ -1580,6 +1637,12 @@ class PwaPlayer {
   private async submitLogs() {
     if (!this.logReporter) return;
 
+    // Guard: don't start a new delegation while one is in-flight
+    if (this._pendingFollowerLogs !== null) {
+      log.debug('Logs delegation in-flight, skipping');
+      return;
+    }
+
     try {
       const logs = await this.logReporter.getLogsForSubmission();
 
@@ -1588,9 +1651,23 @@ class PwaPlayer {
         return;
       }
 
+      const logXml = formatLogs(logs);
+
+      // Follower with live lead: delegate logs via BroadcastChannel
+      if (this.syncManager && !this.syncManager.isLead && this._syncLeadAlive()) {
+        log.info(`[Sync] Delegating ${logs.length} logs to lead`);
+        this._pendingFollowerLogs = logs;
+        this.syncManager.reportLogs(logXml);
+        return;
+      }
+
+      // Lead, standalone, or lead-dead follower: submit directly
+      if (this.syncManager && !this.syncManager.isLead) {
+        log.warn('[Sync] Lead not alive, submitting logs directly');
+      }
+
       log.info(`Submitting ${logs.length} logs to CMS...`);
 
-      const logXml = formatLogs(logs);
       const success = await this.xmds.submitLog(logXml);
 
       if (success) {
@@ -1963,6 +2040,20 @@ class PwaPlayer {
 
   private removeOfflineIndicator() {
     this.timelineOverlay?.setOffline(false);
+  }
+
+  /**
+   * Check if the sync lead is alive (for follower delegation).
+   * Returns true if any peer with role 'lead' has been seen in the last 15s.
+   */
+  private _syncLeadAlive(): boolean {
+    if (!this.syncManager) return false;
+    for (const [, peer] of this.syncManager.followers) {
+      if (peer.role === 'lead' && Date.now() - peer.lastSeen < 15000) {
+        return true;
+      }
+    }
+    return false;
   }
 
   /**
