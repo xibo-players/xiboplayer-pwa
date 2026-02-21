@@ -10,10 +10,15 @@ Lightweight PWA Xibo digital signage player built on the [`@xiboplayer` SDK](htt
 ## Features
 
 - **Offline-first** — Service Worker caching with parallel chunk downloads and progressive streaming
-- **XLF layout rendering** — video (MP4/HLS), images, PDF, text/ticker, web pages via RendererLite
+- **XLF layout rendering** — video (MP4/HLS), images (scale/align), audio overlay, PDF, text/ticker, web pages via RendererLite
 - **Campaign scheduling** — priority-based campaigns, dayparting, interrupts, and overlays
+- **Playback control** — skip to next/previous layout via keyboard or click a layout in the timeline overlay
+- **Conflict indicators** — timeline overlay highlights overlapping schedule entries
+- **Multi-display sync** — BroadcastChannel-based lead/follower synchronized playback for video walls
 - **Real-time CMS commands** — collectNow, screenshot, changeLayout, overlayLayout via XMR WebSocket
+- **SDK event wiring** — widget duration events, scheduled commands, event-based proof of play
 - **Proof of play** — per-layout and per-widget duration tracking with stats reporting
+- **Log batching** — aggregated log submission aligned with CMS spec
 - **Screenshots** — html2canvas-based capture for non-Electron browsers, Electron uses `capturePage()`
 - **Screen Wake Lock** — prevents display from sleeping during playback
 - **Configurable log levels** — `DEBUG`, `INFO`, `WARNING`, `ERROR`, `NONE` (via URL param or CMS settings)
@@ -24,9 +29,15 @@ All overlays and controls are hidden by default for clean kiosk operation.
 
 | Key | Action |
 |-----|--------|
-| `T` | Toggle timeline overlay — shows upcoming scheduled layouts |
+| `T` | Toggle timeline overlay — shows upcoming scheduled layouts with conflict indicators |
 | `D` | Toggle download overlay — shows media download progress |
 | `V` | Toggle video controls — show/hide native browser controls on all videos |
+| `→` / `PageDown` | Skip to next layout |
+| `←` / `PageUp` | Go to previous layout |
+| `Space` | Pause / resume playback |
+| `R` | Revert to scheduled layout (when manually overridden) |
+
+Timeline overlay also supports **click-to-skip** — click any layout in the timeline to jump directly to it.
 
 ## Service Worker Architecture
 
