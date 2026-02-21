@@ -220,7 +220,7 @@ class PwaPlayer {
 
     // Timeline overlay — created on first T key press (or if previously visible)
     if (isTimelineVisible()) {
-      this.timelineOverlay = new TimelineOverlay(true);
+      this.timelineOverlay = new TimelineOverlay(true, (layoutId) => this.skipToLayout(layoutId));
     }
 
     // Request Screen Wake Lock to prevent display sleep
@@ -665,7 +665,7 @@ class PwaPlayer {
         case 't':
         case 'T':
           if (!this.timelineOverlay) {
-            this.timelineOverlay = new TimelineOverlay(true);
+            this.timelineOverlay = new TimelineOverlay(true, (layoutId) => this.skipToLayout(layoutId));
           }
           this.timelineOverlay.toggle();
           break;
@@ -683,6 +683,35 @@ class PwaPlayer {
           videos.forEach(v => v.controls = show);
           break;
         }
+        // Playback control: next/prev/pause
+        case 'ArrowRight':
+        case 'PageDown':
+          log.info('[Remote] Next layout (keyboard)');
+          this.core.advanceToNextLayout();
+          e.preventDefault();
+          break;
+        case 'ArrowLeft':
+        case 'PageUp':
+          log.info('[Remote] Previous layout (keyboard)');
+          this.core.advanceToPreviousLayout();
+          e.preventDefault();
+          break;
+        case ' ':
+          log.info('[Remote] Toggle pause (keyboard)');
+          if (this.renderer.isPaused()) {
+            this.renderer.resume();
+          } else {
+            this.renderer.pause();
+          }
+          e.preventDefault();
+          break;
+        case 'r':
+        case 'R':
+          if (this.core.isLayoutOverridden()) {
+            log.info('[Remote] Revert to schedule (keyboard)');
+            this.core.revertToSchedule();
+          }
+          break;
       }
     });
 
@@ -707,6 +736,15 @@ class PwaPlayer {
     }
 
     log.info('Remote controls initialized (keyboard + MediaSession)');
+  }
+
+  /**
+   * Skip to a specific layout by ID (from timeline click or XMR command).
+   * Uses changeLayout() which sets a layout override — press R to revert to schedule.
+   */
+  private skipToLayout(layoutId: number) {
+    log.info(`Skipping to layout ${layoutId} (timeline click)`);
+    this.core.changeLayout(layoutId);
   }
 
   private parseBody(body: string | null): any {

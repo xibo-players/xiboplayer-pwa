@@ -20,9 +20,11 @@ export class TimelineOverlay {
   private timeline: TimelineEntry[] = [];
   private currentLayoutId: number | null = null;
   private offline: boolean = false;
+  private onLayoutClick: ((layoutId: number) => void) | null = null;
 
-  constructor(visible = false) {
+  constructor(visible = false, onLayoutClick?: (layoutId: number) => void) {
     this.visible = visible;
+    this.onLayoutClick = onLayoutClick || null;
     this.createOverlay();
     if (!this.visible) {
       this.overlay!.style.display = 'none';
@@ -48,6 +50,15 @@ export class TimelineOverlay {
       box-shadow: 0 0.3vh 1.2vw rgba(0, 0, 0, 0.5);
       pointer-events: auto;
     `;
+    // Click-to-skip: delegate click events on layout entries
+    this.overlay.addEventListener('click', (e: MouseEvent) => {
+      const target = (e.target as HTMLElement).closest('[data-layout-id]') as HTMLElement | null;
+      if (!target || !this.onLayoutClick) return;
+      const layoutId = parseInt(target.dataset.layoutId!, 10);
+      if (isNaN(layoutId) || layoutId === this.currentLayoutId) return;
+      this.onLayoutClick(layoutId);
+    });
+
     document.body.appendChild(this.overlay);
   }
 
@@ -102,6 +113,8 @@ export class TimelineOverlay {
     const offlineBadge = this.offline ? ' <span style="color: #ff4444; font-size: 1.1vw;">OFFLINE</span>' : '';
     let html = `<div style="font-weight: 600; margin-bottom: 0.8vh; font-size: 1.4vw; color: #ccc;">Timeline (${count} upcoming)${offlineBadge}</div>`;
 
+    const clickable = this.onLayoutClick !== null;
+
     for (const entry of visible) {
       const layoutId = parseInt(entry.layoutFile.replace('.xlf', ''), 10);
       // Current = the entry whose time window contains now AND matches current layout
@@ -115,8 +128,10 @@ export class TimelineOverlay {
 
       const borderLeft = isCurrent ? 'border-left: 0.25vw solid #4a9eff; padding-left: 0.6vw;' : 'padding-left: 0.85vw;';
       const color = isCurrent ? 'color: #fff;' : 'color: #ccc;';
+      const cursor = clickable && !isCurrent ? 'cursor: pointer;' : '';
+      const hover = clickable && !isCurrent ? 'onmouseover="this.style.background=\'rgba(255,255,255,0.1)\'" onmouseout="this.style.background=\'none\'"' : '';
 
-      html += `<div style="${borderLeft} ${color} margin-bottom: 0.3vh; font-family: monospace; font-size: 1.3vw; line-height: 1.5; white-space: nowrap;">`;
+      html += `<div data-layout-id="${layoutId}" style="${borderLeft} ${color} ${cursor} margin-bottom: 0.3vh; font-family: monospace; font-size: 1.3vw; line-height: 1.5; white-space: nowrap;" ${hover}>`;
       html += `${marker}${startStr}–${endStr}  #${layoutId}  ${durStr}`;
       if (entry.isDefault) html += ' <span style="color: #888;">[def]</span>';
       html += '</div>';
