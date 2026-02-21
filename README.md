@@ -39,6 +39,36 @@ All overlays and controls are hidden by default for clean kiosk operation.
 
 Timeline overlay also supports **click-to-skip** — click any layout in the timeline to jump directly to it.
 
+## Debug Overlays
+
+Three toggleable overlays provide real-time insight into player operation without leaving the playback screen. All are hidden by default for clean kiosk operation — press the corresponding key to toggle.
+
+### Timeline Overlay (`T`)
+
+Shows the upcoming schedule as a scrollable list (up to 8 entries visible):
+
+- **Current layout** highlighted with a `▶` marker and blue left border
+- **Time range** and **duration** for each entry (e.g. `19:25–19:31  #362  6m 15s`)
+- **`[def]`** tag on default/fallback layouts (no campaign scheduled)
+- **`OFFLINE`** badge when the player has lost CMS connectivity
+- **⚠ conflict indicators** — an orange `⚠ N` badge appears when N lower-priority layouts were scheduled for the same time slot but suppressed by a higher-priority campaign. Hover over the ⚠ to see which layouts were hidden and their priorities (e.g. `Hidden: #366 (p0), #362 (p0)`)
+- **Click-to-skip** — click any future layout to jump to it immediately. The player enters override mode (the schedule won't auto-advance). Press `R` to return to normal schedule playback
+
+### Download Overlay (`D`)
+
+Shows real-time media download progress:
+
+- **Active downloads** with progress bars, speed, and chunk status
+- **Queue depth** — how many files are waiting to download
+- **Idle status** when all media is cached and up to date
+- Auto-hides when all downloads complete (if auto-hide is enabled)
+
+Useful during initial deployment or after a `purgeAll` command to monitor how quickly content is being cached.
+
+### Video Controls (`V`)
+
+Toggles native browser `<video>` controls on all video elements currently in the DOM. Shows play/pause, seek bar, volume, and fullscreen buttons on each video widget — helpful for debugging video playback issues, checking codec info, or manually seeking within a video.
+
 ## Service Worker Architecture
 
 The Service Worker (`sw-pwa.js`) provides:
