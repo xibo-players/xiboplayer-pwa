@@ -37,6 +37,7 @@ let formatStats: any;
 let LogReporter: any;
 let formatLogs: any;
 let DisplaySettings: any;
+let SyncManager: any;
 
 // SDK package versions (populated in loadCoreModules)
 const sdkVersions: Record<string, string> = {};
@@ -58,6 +59,7 @@ class PwaPlayer {
   private _screenshotInFlight = false; // Concurrency guard — one capture at a time
   private _html2canvasMod: any = null; // Pre-loaded module
   private _wakeLock: any = null; // Screen Wake Lock sentinel
+  private syncManager: any = null; // Multi-display sync coordinator
   private _currentLayoutEnableStat: boolean = true; // enableStat from current layout XLF
   private _probeTimer: any = null; // Debounce timer for duration probing
 
@@ -285,8 +287,11 @@ class PwaPlayer {
       const coreModule = await import('@xiboplayer/core');
       // @ts-ignore
       const rendererModule = await import('@xiboplayer/renderer');
+      // @ts-ignore
+      const syncModule = await import('@xiboplayer/sync');
 
       cacheWidgetHtml = cacheModule.cacheWidgetHtml;
+      SyncManager = syncModule.SyncManager;
       scheduleManager = scheduleModule.scheduleManager;
       config = configModule.config;
       RestClient = xmdsModule.RestClient;
@@ -398,6 +403,36 @@ class PwaPlayer {
       if (this.displaySettings) {
         document.title = `Xibo Player - ${this.displaySettings.getDisplayName()}`;
       }
+    });
+
+    // Multi-display sync: create SyncManager when CMS provides sync config
+    this.core.on('sync-config', (syncConfig: any) => {
+      if (this.syncManager) {
+        this.syncManager.stop();
+      }
+      this.syncManager = new SyncManager({
+        displayId: config.hardwareKey,
+        syncConfig,
+        onLayoutChange: async (layoutId: string) => {
+          // Follower: lead requested a layout change — load it but don't show yet
+          log.info(`[Sync] Loading layout ${layoutId} (waiting for show signal)`);
+          await this.prepareAndRenderLayout(parseInt(layoutId, 10));
+          // Report ready to lead
+          this.syncManager?.reportReady(layoutId);
+        },
+        onLayoutShow: (layoutId: string) => {
+          // Lead/Follower: show the layout now (already rendered by prepareAndRenderLayout)
+          log.info(`[Sync] Show signal for layout ${layoutId}`);
+        },
+        onVideoStart: (layoutId: string, regionId: string) => {
+          // Resume paused video in the specified region
+          log.info(`[Sync] Video start: layout ${layoutId} region ${regionId}`);
+          this.renderer.resumeRegionMedia?.(regionId);
+        },
+      });
+      this.core.setSyncManager(this.syncManager);
+      this.syncManager.start();
+      log.info(`[Sync] SyncManager started as ${syncConfig.isLead ? 'LEAD' : 'FOLLOWER'}`);
     });
 
     this.core.on('files-received', (files: any[]) => {
