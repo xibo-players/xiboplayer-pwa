@@ -14,7 +14,7 @@ Lightweight PWA Xibo digital signage player built on the [`@xiboplayer` SDK](htt
 - **Campaign scheduling** — priority-based campaigns, dayparting, interrupts, and overlays
 - **Playback control** — skip to next/previous layout via keyboard or click a layout in the timeline overlay
 - **Conflict indicators** — timeline overlay highlights overlapping schedule entries
-- **Multi-display sync** — BroadcastChannel-based lead/follower synchronized playback for video walls
+- **Multi-display sync** — BroadcastChannel-based lead/follower synchronized playback for video walls, with cross-tab stats/logs delegation so followers submit proof-of-play through the sync lead
 - **Real-time CMS commands** — collectNow, screenshot, changeLayout, overlayLayout via XMR WebSocket
 - **SDK event wiring** — widget duration events, scheduled commands, event-based proof of play
 - **Proof of play** — per-layout and per-widget duration tracking with stats reporting
@@ -75,7 +75,8 @@ The Service Worker (`sw-pwa.js`) provides:
 
 - **Progressive streaming** — large media served via chunk streaming with Range request support
 - **BlobCache** — in-memory assembled chunks with LRU eviction for fast video seeking
-- **XLF-driven media resolution** — parses layout XLF to download exactly the media each layout needs
+- **XLF-driven media resolution** — parses layout XLF to download exactly the media each layout needs, including data widget IDs (media tags without fileId) and unclaimed media files
+- **Server-enriched widget data** — RSS/dataset widget data paths are provided by the CMS in enriched RequiredFiles responses, downloaded alongside regular media rather than fetched client-side
 - **Layout-ordered downloads** — media queued with barriers so the currently-playing layout downloads first
 - **Version-aware activation** — same-version SW update skips activation to preserve in-flight video streams
 - **Adaptive chunk sizing** — adjusts chunk size and concurrency based on device RAM (4GB/8GB+ tiers)
