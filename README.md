@@ -13,7 +13,7 @@ Lightweight PWA Xibo digital signage player built on the [`@xiboplayer` SDK](htt
 - **XLF layout rendering** — video (MP4/HLS), images (scale/align), audio overlay, PDF, text/ticker, web pages via RendererLite
 - **Campaign scheduling** — priority-based campaigns, dayparting, interrupts, and overlays
 - **Playback control** — skip to next/previous layout via keyboard or click a layout in the timeline overlay
-- **Conflict indicators** — timeline overlay highlights overlapping schedule entries
+- **Conflict indicators** — timeline overlay highlights overlapping schedule entries with accurate per-layout durations
 - **Multi-display sync** — BroadcastChannel-based lead/follower synchronized playback for video walls, with cross-tab stats/logs delegation so followers submit proof-of-play through the sync lead
 - **Real-time CMS commands** — collectNow, screenshot, changeLayout, overlayLayout via XMR WebSocket
 - **SDK event wiring** — widget duration events, scheduled commands, event-based proof of play
@@ -53,6 +53,7 @@ Shows the upcoming schedule as a scrollable list (up to 8 entries visible):
 - **`OFFLINE`** badge when the player has lost CMS connectivity
 - **⚠ conflict indicators** — an orange `⚠ N` badge appears when N lower-priority layouts were scheduled for the same time slot but suppressed by a higher-priority campaign. Hover over the ⚠ to see which layouts were hidden and their priorities (e.g. `Hidden: #366 (p0), #362 (p0)`)
 - **Click-to-skip** — click any future layout to jump to it immediately. The player enters override mode (the schedule won't auto-advance). Press `R` to return to normal schedule playback
+- **Remaining duration** — the currently playing layout shows time remaining rather than full duration, so the predicted end time is always accurate
 
 ### Download Overlay (`D`)
 
