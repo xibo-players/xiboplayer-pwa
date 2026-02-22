@@ -1442,7 +1442,8 @@ class PwaPlayer {
                   log.debug(`Using cached widget HTML for ${type} ${widgetId}`);
                 } else {
                   html = await this.xmds.getResource(layoutId, regionId, widgetId);
-                  await cacheWidgetHtml(layoutId, regionId, widgetId, html);
+                  const cmsUrl = (this.xmds as any).config?.cmsAddress || (this.xmds as any).config?.restApiUrl;
+                  await cacheWidgetHtml(layoutId, regionId, widgetId, html, { cmsUrl });
                   log.debug(`Retrieved widget HTML for ${type} ${widgetId}`);
                 }
 
