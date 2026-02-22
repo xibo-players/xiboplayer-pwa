@@ -1492,8 +1492,9 @@ class PwaPlayer {
         // Parse XLF to find video widgets with duration=0 (use media length)
         const parser = new DOMParser();
         const doc = parser.parseFromString(xlfXml, 'text/xml');
-        let maxDuration = 0;
 
+        // Probe actual video durations, keyed by fileId
+        const videoDurations = new Map<string, number>();
         for (const mediaEl of doc.querySelectorAll('media[type="video"]')) {
           const useDuration = mediaEl.getAttribute('useDuration');
           if (useDuration === '1') continue; // Has explicit CMS duration, skip
@@ -1507,12 +1508,41 @@ class PwaPlayer {
           // Probe metadata only — does NOT download the full video
           const duration = await this.probeVideoDuration(`${PLAYER_BASE}/cache/media/${fileId}`);
           if (duration > 0) {
-            maxDuration = Math.max(maxDuration, duration);
+            videoDurations.set(fileId, duration);
           }
         }
 
-        if (maxDuration > 0) {
-          this.core.recordLayoutDuration(String(layoutId), maxDuration);
+        if (videoDurations.size === 0) continue;
+
+        // Calculate full layout duration (max region, summing all widgets per region)
+        // Same logic as renderer's updateLayoutDuration() — accounts for non-video
+        // widgets (PDFs, images, tickers) alongside probed video durations.
+        let maxRegionDuration = 0;
+        for (const regionEl of doc.querySelectorAll('region')) {
+          if (regionEl.getAttribute('type') === 'drawer') continue;
+          let regionDuration = 0;
+
+          for (const mediaEl of regionEl.querySelectorAll('media')) {
+            const dur = parseInt(mediaEl.getAttribute('duration') || '0', 10);
+            const useDur = parseInt(mediaEl.getAttribute('useDuration') || '1', 10);
+            const fileId = mediaEl.getAttribute('fileId') || '';
+            const probedDur = videoDurations.get(fileId);
+
+            if (probedDur !== undefined) {
+              // Video with probed duration
+              regionDuration += probedDur;
+            } else if (dur > 0 && useDur !== 0) {
+              // Non-video widget with explicit duration
+              regionDuration += dur;
+            }
+            // Looping widgets (useDuration=0, no probe) contribute 0
+          }
+
+          maxRegionDuration = Math.max(maxRegionDuration, regionDuration);
+        }
+
+        if (maxRegionDuration > 0) {
+          this.core.recordLayoutDuration(String(layoutId), maxRegionDuration);
         }
       } catch (err) {
         log.debug(`Duration probe failed for layout ${layoutId}:`, err);

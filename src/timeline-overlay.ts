@@ -120,29 +120,29 @@ export class TimelineOverlay {
     let html = `<div style="font-weight: 600; margin-bottom: 0.8vh; font-size: 1.4vw; color: #ccc;">Timeline (${count} upcoming)${offlineBadge}</div>`;
 
     const clickable = this.onLayoutClick !== null;
+    let currentFound = false;
 
     for (const entry of visible) {
       const layoutId = parseInt(entry.layoutFile.replace('.xlf', ''), 10);
-      // Current = the entry whose time window contains now AND matches current layout
-      const isCurrent = layoutId === this.currentLayoutId
-        && entry.startTime <= now && entry.endTime > now;
+      // Current = first entry matching the currently playing layout
+      const isCurrent = !currentFound && layoutId === this.currentLayoutId;
+      if (isCurrent) currentFound = true;
 
       const startStr = this.formatTime(entry.startTime);
       const endStr = this.formatTime(entry.endTime);
       const durStr = this.formatDuration(entry.duration);
-      const marker = isCurrent ? '▶ ' : '  ';
 
       const borderLeft = isCurrent ? 'border-left: 0.25vw solid #4a9eff; padding-left: 0.6vw;' : 'padding-left: 0.85vw;';
-      const color = isCurrent ? 'color: #fff;' : 'color: #ccc;';
+      const color = isCurrent ? 'color: #fff; font-weight: 600;' : 'color: #aaa;';
       const cursor = clickable && !isCurrent ? 'cursor: pointer;' : '';
       const hover = clickable && !isCurrent ? 'onmouseover="this.style.background=\'rgba(255,255,255,0.1)\'" onmouseout="this.style.background=\'none\'"' : '';
 
       html += `<div data-layout-id="${layoutId}" style="${borderLeft} ${color} ${cursor} margin-bottom: 0.3vh; font-family: monospace; font-size: 1.3vw; line-height: 1.5; white-space: nowrap;" ${hover}>`;
-      html += `${marker}${startStr}–${endStr}  #${layoutId}  ${durStr}`;
+      html += `${startStr}–${endStr}  #${layoutId}  ${durStr}`;
       if (entry.isDefault) html += ' <span style="color: #888;">[def]</span>';
       if (entry.hidden && entry.hidden.length > 0) {
         const hiddenIds = entry.hidden.map(h => `#${h.file.replace('.xlf', '')} (p${h.priority})`).join(', ');
-        html += ` <span style="color: #ff9944; font-size: 1.1vw;" title="Hidden: ${hiddenIds}">&#9888; ${entry.hidden.length}</span>`;
+        html += ` <span style="color: #8899aa; font-size: 1.1vw;" title="Also scheduled: ${hiddenIds}">+${entry.hidden.length}</span>`;
       }
       html += '</div>';
     }
