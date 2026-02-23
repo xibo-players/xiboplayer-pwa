@@ -105,8 +105,24 @@ export class TimelineOverlay {
 
     const now = new Date();
 
-    // Filter: show current (endTime > now) + future entries only
-    const entries = this.timeline.filter(e => e.endTime > now);
+    // Find the currently playing layout entry
+    const currentEntry = this.currentLayoutId !== null
+      ? this.timeline.find(e => {
+          const id = parseInt(e.layoutFile.replace('.xlf', ''), 10);
+          return id === this.currentLayoutId && e.endTime > now;
+        })
+      : null;
+
+    // Future entries: start in the future, exclude already-played and current
+    const futureEntries = this.timeline.filter(e => {
+      if (e === currentEntry) return false;
+      return e.startTime > now;
+    });
+
+    // Build final list: current layout always first, then future entries
+    const entries: TimelineEntry[] = [];
+    if (currentEntry) entries.push(currentEntry);
+    entries.push(...futureEntries);
 
     if (entries.length === 0) {
       this.overlay.innerHTML = '<div style="color: #999;">Timeline — no upcoming layouts</div>';
@@ -120,13 +136,10 @@ export class TimelineOverlay {
     let html = `<div style="font-weight: 600; margin-bottom: 0.8vh; font-size: 1.4vw; color: #ccc;">Timeline (${count} upcoming)${offlineBadge}</div>`;
 
     const clickable = this.onLayoutClick !== null;
-    let currentFound = false;
 
     for (const entry of visible) {
       const layoutId = parseInt(entry.layoutFile.replace('.xlf', ''), 10);
-      // Current = first entry matching the currently playing layout
-      const isCurrent = !currentFound && layoutId === this.currentLayoutId;
-      if (isCurrent) currentFound = true;
+      const isCurrent = entry === currentEntry;
 
       const startStr = this.formatTime(entry.startTime);
       const endStr = this.formatTime(entry.endTime);
