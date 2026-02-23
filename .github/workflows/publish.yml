@@ -20,16 +20,23 @@ jobs:
       - name: Wait for @xiboplayer/cache on npm
         run: |
           VERSION="${{ steps.version.outputs.version }}"
-          echo "Waiting for @xiboplayer/cache@${VERSION} on npm..."
-          for i in $(seq 1 60); do
+          # Check if SDK has the same version tag (coordinated release)
+          # If not, skip — PWA uses ^0.4.0 ranges so any 0.4.x works
+          echo "Checking if @xiboplayer/cache@${VERSION} is expected..."
+          LATEST=$(npm view "@xiboplayer/cache" version 2>/dev/null || echo "0.0.0")
+          if [ "$LATEST" = "$VERSION" ]; then
+            echo "Already on npm"
+            exit 0
+          fi
+          echo "Waiting for @xiboplayer/cache@${VERSION} (current: ${LATEST})..."
+          for i in $(seq 1 30); do
             if npm view "@xiboplayer/cache@${VERSION}" version 2>/dev/null; then
               echo "Found on npm after ~$((i * 10))s"
               exit 0
             fi
             sleep 10
           done
-          echo "Timed out waiting for SDK publish (10 min)"
-          exit 1
+          echo "SDK ${VERSION} not published after 5 min — proceeding with latest (${LATEST})"
 
   publish:
     needs: [wait-for-sdk]

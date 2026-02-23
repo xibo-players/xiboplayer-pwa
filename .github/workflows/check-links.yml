@@ -1,0 +1,25 @@
+name: Check for local links
+
+on:
+  push:
+    branches: [main]
+    paths: ['package.json']
+  pull_request:
+    branches: [main]
+    paths: ['package.json']
+
+jobs:
+  check:
+    name: No pnpm link overrides
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Reject pnpm link overrides on main
+        run: |
+          if grep -q '"link:' package.json; then
+            echo "::error::package.json contains pnpm link: overrides — these belong on local-test only"
+            grep '"link:' package.json
+            exit 1
+          fi
+          echo "No link: overrides found"
