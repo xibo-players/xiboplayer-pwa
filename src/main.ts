@@ -732,6 +732,46 @@ class PwaPlayer {
       setTimeout(() => window.focus(), 200);
     });
 
+    // Forward keyboard events from widget iframes to the main document.
+    // Iframes have their own document, so keydown on the parent never fires
+    // when an iframe has focus. We observe new iframes and attach forwarders.
+    const attachIframeKeyForwarder = (iframe: HTMLIFrameElement) => {
+      const tryAttach = () => {
+        try {
+          const iframeDoc = iframe.contentDocument || iframe.contentWindow?.document;
+          if (!iframeDoc) return;
+          if ((iframe as any).__keyForwarderAttached) return;
+          (iframe as any).__keyForwarderAttached = true;
+          iframeDoc.addEventListener('keydown', (e: KeyboardEvent) => {
+            // Re-dispatch on the main document so our handler fires
+            const clone = new KeyboardEvent('keydown', {
+              key: e.key, code: e.code, keyCode: e.keyCode,
+              ctrlKey: e.ctrlKey, shiftKey: e.shiftKey, altKey: e.altKey, metaKey: e.metaKey,
+              bubbles: true, cancelable: true,
+            });
+            if (document.dispatchEvent(clone)) return; // not prevented
+            e.preventDefault();
+          });
+        } catch { /* cross-origin iframe, ignore */ }
+      };
+      iframe.addEventListener('load', tryAttach);
+      tryAttach();
+    };
+
+    // Attach to existing and future iframes
+    Array.from(document.querySelectorAll('iframe')).forEach(f => attachIframeKeyForwarder(f as HTMLIFrameElement));
+    const iframeObserver = new MutationObserver((mutations) => {
+      for (const m of mutations) {
+        for (const node of m.addedNodes) {
+          if (node instanceof HTMLIFrameElement) attachIframeKeyForwarder(node);
+          if (node instanceof HTMLElement) {
+            node.querySelectorAll('iframe').forEach(f => attachIframeKeyForwarder(f as HTMLIFrameElement));
+          }
+        }
+      }
+    });
+    iframeObserver.observe(document.body, { childList: true, subtree: true });
+
     // Keyboard / presenter remote (clicker) controls
     document.addEventListener('keydown', (e: KeyboardEvent) => {
       switch (e.key) {
