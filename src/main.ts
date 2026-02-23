@@ -1439,12 +1439,17 @@ class PwaPlayer {
                 let html: string;
                 if (cachedResponse) {
                   html = await cachedResponse.text();
-                  log.debug(`Using cached widget HTML for ${type} ${widgetId}`);
+                  log.debug(`Found cached widget HTML for ${type} ${widgetId}`);
                 } else {
                   html = await this.xmds.getResource(layoutId, regionId, widgetId);
-                  await cacheWidgetHtml(layoutId, regionId, widgetId, html);
-                  log.debug(`Retrieved widget HTML for ${type} ${widgetId}`);
+                  log.debug(`Retrieved widget HTML for ${type} ${widgetId} from CMS`);
                 }
+                // Always process: injects <base> tag, rewrites CMS signed URLs
+                // to local /cache/static/ paths, and fetches static resources.
+                // cacheWidgetHtml is idempotent — already-rewritten URLs won't re-match.
+                await cacheWidgetHtml(layoutId, regionId, widgetId, html);
+                const processed = await cache.match(cacheKey);
+                if (processed) html = await processed.text();
 
                 // Update raw content in XLF
                 const rawEl = mediaEl.querySelector('raw');
