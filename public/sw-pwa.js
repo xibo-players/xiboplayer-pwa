@@ -21,7 +21,7 @@ import {
 import { BASE } from '@xiboplayer/sw/utils';
 
 // ── Configuration ──────────────────────────────────────────────────────────
-const SW_VERSION = '__BUILD_DATE__';
+const SW_VERSION = __BUILD_DATE__;
 const CACHE_NAME = 'xibo-media-v1';
 const STATIC_CACHE = 'xibo-static-v1';
 
