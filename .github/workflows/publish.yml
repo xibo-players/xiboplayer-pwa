@@ -37,6 +37,6 @@ jobs:
     uses: xibo-players/.github/.github/workflows/publish-npm.yml@main
     with:
       cache-deps: false
-      install-command: 'node -e "const p=require(\"./package.json\"); delete p.pnpm; require(\"fs\").writeFileSync(\"package.json\", JSON.stringify(p, null, 2)+\"\n\")" && pnpm install --no-frozen-lockfile && pnpm run build'
+      install-command: 'pnpm install --no-frozen-lockfile && pnpm run build'
     secrets:
       npm-token: ${{ secrets.NPM_TOKEN }}

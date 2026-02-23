@@ -37,4 +37,4 @@ jobs:
     uses: xibo-players/.github/.github/workflows/build-pwa.yml@main
     with:
       cache-deps: false
-      install-command: 'node -e "const p=require(\"./package.json\"); delete p.pnpm; require(\"fs\").writeFileSync(\"package.json\", JSON.stringify(p, null, 2)+\"\n\")" && pnpm install --no-frozen-lockfile'
+      install-command: 'pnpm install --no-frozen-lockfile'
