@@ -51,7 +51,7 @@ Shows the upcoming schedule as a scrollable list (up to 8 entries visible):
 - **Time range** and **duration** for each entry (e.g. `19:25–19:31  #362  6m 15s`)
 - **`[def]`** tag on default/fallback layouts (no campaign scheduled)
 - **`OFFLINE`** badge when the player has lost CMS connectivity
-- **⚠ conflict indicators** — an orange `⚠ N` badge appears when N lower-priority layouts were scheduled for the same time slot but suppressed by a higher-priority campaign. Hover over the ⚠ to see which layouts were hidden and their priorities (e.g. `Hidden: #366 (p0), #362 (p0)`)
+- **Conflict indicators** — a `+N` badge appears next to a layout when N other layouts were scheduled for the same time slot but suppressed by a higher-priority campaign. Hover over it to see which layouts were hidden and their priorities (e.g. `Also scheduled: #366 (p0), #362 (p0)`)
 - **Click-to-skip** — click any future layout to jump to it immediately. The player enters override mode (the schedule won't auto-advance). Press `R` to return to normal schedule playback
 - **Remaining duration** — the currently playing layout shows time remaining rather than full duration, so the predicted end time is always accurate
 
