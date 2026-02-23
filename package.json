@@ -55,5 +55,6 @@
       "@xiboplayer/settings": "link:../xiboplayer/packages/settings",
       "@xiboplayer/sw": "link:../xiboplayer/packages/sw"
     }
-  }
+  },
+  "homepage": "https://xiboplayer.org"
 }
