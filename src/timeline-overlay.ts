@@ -27,6 +27,7 @@ export class TimelineOverlay {
   private currentLayoutId: number | null = null;
   private offline: boolean = false;
   private onLayoutClick: ((layoutId: number) => void) | null = null;
+  private refreshTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(visible = false, onLayoutClick?: (layoutId: number) => void) {
     this.visible = visible;
@@ -35,6 +36,8 @@ export class TimelineOverlay {
     if (!this.visible) {
       this.overlay!.style.display = 'none';
     }
+    // Re-render every 5s so played entries disappear as time passes
+    this.refreshTimer = setInterval(() => this.render(), 5000);
   }
 
   private createOverlay() {
@@ -178,6 +181,10 @@ export class TimelineOverlay {
   }
 
   destroy() {
+    if (this.refreshTimer) {
+      clearInterval(this.refreshTimer);
+      this.refreshTimer = null;
+    }
     if (this.overlay) {
       this.overlay.remove();
       this.overlay = null;
