@@ -262,6 +262,23 @@
     @keyframes flashIn { from { opacity: 0; } to { opacity: 1; } }
     @keyframes scaleIn { from { transform: scale(0); } to { transform: scale(1); } }
 
+    /* Unlock gate */
+    .unlock-title {
+      font-size: 18px;
+      font-weight: 600;
+      color: #fff;
+      margin-bottom: 8px;
+      text-align: center;
+    }
+
+    .unlock-desc {
+      font-size: 13px;
+      color: #888;
+      margin-bottom: 20px;
+      text-align: center;
+      line-height: 1.5;
+    }
+
     /* Footer */
     .footer {
       margin-top: 24px;
@@ -276,6 +293,20 @@
     <div class="logo">
       <div class="logo-text"><span>xibo</span> player</div>
       <div class="logo-sub">PWA Digital Signage</div>
+    </div>
+
+    <!-- Phase 0: Unlock gate (reconfiguration only) -->
+    <div id="phase-unlock" class="phase">
+      <div class="unlock-title">Reconfigure Display</div>
+      <div class="unlock-desc">Enter the current CMS Key to change settings.</div>
+      <form id="unlock-form">
+        <div class="form-group">
+          <label for="unlock-key">CMS Key</label>
+          <input type="password" id="unlock-key" placeholder="Current CMS key" required>
+        </div>
+        <button type="submit">Unlock</button>
+      </form>
+      <div id="unlock-error" class="error-msg"></div>
     </div>
 
     <!-- Phase 1: Configuration Form -->
@@ -372,6 +403,7 @@
     const form = document.getElementById('setup-form');
     const errorEl = document.getElementById('error');
     const submitBtn = document.getElementById('submit-btn');
+    const phaseUnlock = document.getElementById('phase-unlock');
     const phaseSetup = document.getElementById('phase-setup');
     const phaseWaiting = document.getElementById('phase-waiting');
     const countdownEl = document.getElementById('countdown');
@@ -407,6 +439,7 @@
 
     // ── Helpers ──
     function showPhase(phase) {
+      phaseUnlock.classList.remove('active');
       phaseSetup.classList.remove('active');
       phaseWaiting.classList.remove('active');
       phase.classList.add('active');
@@ -511,16 +544,45 @@
       }
     }
 
-    // ── Pre-fill if already configured ──
-    if (config.isConfigured()) {
+    // ── Unlock gate for reconfiguration ──
+    const isReconfigure = config.isConfigured() && config.cmsKey;
+    if (isReconfigure) {
+      // Show unlock phase instead of setup form
+      showPhase(phaseUnlock);
+    }
+
+    // ── Unlock form handler ──
+    document.getElementById('unlock-form').addEventListener('submit', (e) => {
+      e.preventDefault();
+      const unlockError = document.getElementById('unlock-error');
+      const enteredKey = document.getElementById('unlock-key').value.trim();
+
+      if (enteredKey === config.cmsKey) {
+        unlockError.style.display = 'none';
+        // Pre-fill form with existing config
+        document.getElementById('cms-address').value = config.cmsAddress;
+        document.getElementById('cms-key').value = config.cmsKey;
+        document.getElementById('display-name').value = config.displayName;
+        if (config.apiClientId) {
+          document.getElementById('api-client-id').value = config.apiClientId;
+          document.getElementById('api-client-secret').value = config.apiClientSecret || '';
+        }
+        showPhase(phaseSetup);
+      } else {
+        unlockError.textContent = 'Incorrect CMS key';
+        unlockError.style.display = 'block';
+      }
+    });
+
+    // ── Pre-fill if first-time setup (no unlock gate) ──
+    if (!isReconfigure && config.isConfigured()) {
       document.getElementById('cms-address').value = config.cmsAddress;
       document.getElementById('cms-key').value = config.cmsKey;
       document.getElementById('display-name').value = config.displayName;
-    }
-    // Pre-fill API credentials if saved
-    if (config.apiClientId) {
-      document.getElementById('api-client-id').value = config.apiClientId;
-      document.getElementById('api-client-secret').value = config.apiClientSecret || '';
+      if (config.apiClientId) {
+        document.getElementById('api-client-id').value = config.apiClientId;
+        document.getElementById('api-client-secret').value = config.apiClientSecret || '';
+      }
     }
 
     // ── Form Submit ──
@@ -610,7 +672,8 @@
     submitBtn.textContent = 'Connect';
 
     // ── Auto-resume polling if already registered but not authorized ──
-    if (config.isConfigured()) {
+    // Skip auto-resume when reconfiguring (user explicitly opened setup)
+    if (config.isConfigured() && !isReconfigure) {
       (async () => {
         try {
           const client = await getTransport();
