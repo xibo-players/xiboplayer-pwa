@@ -2162,6 +2162,9 @@ function startPlayer() {
   const player = new PwaPlayer();
   player.init().catch(error => {
     log.error('Failed to initialize:', error);
+    // First boot with bad config — redirect to setup so user can fix it
+    log.warn('Redirecting to setup screen...');
+    window.location.href = './setup.html';
   });
   window.addEventListener('beforeunload', () => {
     player.cleanup();
