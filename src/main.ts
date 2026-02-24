@@ -825,6 +825,11 @@ class PwaPlayer {
             this.core.revertToSchedule();
           }
           break;
+        case 's':
+        case 'S':
+          log.info('[Remote] Open setup page (keyboard)');
+          window.location.href = './setup.html';
+          break;
       }
     });
 
