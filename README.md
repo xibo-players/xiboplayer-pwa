@@ -35,6 +35,7 @@ All overlays and controls are hidden by default for clean kiosk operation.
 | `→` / `PageDown` | Skip to next layout |
 | `←` / `PageUp` | Go to previous layout |
 | `Space` | Pause / resume playback |
+| `S` | Open setup overlay — CMS key gate, then full reconfiguration form |
 | `R` | Revert to scheduled layout (when manually overridden) |
 
 Timeline overlay also supports **click-to-skip** — click any layout in the timeline to jump directly to it.
