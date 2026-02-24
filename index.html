@@ -105,20 +105,27 @@
     // Remove this line when debugging is no longer needed
     localStorage.setItem('xibo_log_level', 'DEBUG');
 
-    // Check if player is configured
+    // Check if player is configured with valid CMS connection params
     const params = new URLSearchParams(window.location.search);
     const hasUrlConfig = params.has('cmsAddress') && params.has('cmsKey');
-    const hasStoredConfig = localStorage.getItem('xibo_config');
+
+    let hasStoredConfig = false;
+    try {
+      const raw = localStorage.getItem('xibo_config');
+      if (raw) {
+        const cfg = JSON.parse(raw);
+        hasStoredConfig = !!(cfg.cmsAddress && cfg.cmsKey);
+      }
+    } catch (e) { /* corrupt config — treat as missing */ }
 
     console.log('[Player] Has URL config:', hasUrlConfig);
-    console.log('[Player] Has stored config:', !!hasStoredConfig);
+    console.log('[Player] Has valid stored config:', hasStoredConfig);
 
     if (!hasUrlConfig && !hasStoredConfig) {
-      // Not configured, redirect to setup
-      console.log('[Player] Not configured, redirecting to setup...');
+      console.log('[Player] No valid config, redirecting to setup...');
       window.location.href = './setup.html';
     } else {
-      console.log('[Player] Configuration found, loading player...');
+      console.log('[Player] Configuration valid, loading player...');
     }
   </script>
 
