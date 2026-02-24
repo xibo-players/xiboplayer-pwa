@@ -560,7 +560,7 @@
       if (enteredKey === config.cmsKey) {
         unlockError.style.display = 'none';
         // Pre-fill form with existing config
-        document.getElementById('cms-address').value = config.cmsAddress;
+        document.getElementById('cms-address').value = config.cmsUrl;
         document.getElementById('cms-key').value = config.cmsKey;
         document.getElementById('display-name').value = config.displayName;
         if (config.apiClientId) {
@@ -576,7 +576,7 @@
 
     // ── Pre-fill if first-time setup (no unlock gate) ──
     if (!isReconfigure && config.isConfigured()) {
-      document.getElementById('cms-address').value = config.cmsAddress;
+      document.getElementById('cms-address').value = config.cmsUrl;
       document.getElementById('cms-key').value = config.cmsKey;
       document.getElementById('display-name').value = config.displayName;
       if (config.apiClientId) {
@@ -595,7 +595,7 @@
       const displayName = document.getElementById('display-name').value.trim();
 
       // Save config
-      config.cmsAddress = cmsAddress;
+      config.cmsUrl = cmsAddress;
       config.cmsKey = cmsKey;
       config.displayName = displayName;
 

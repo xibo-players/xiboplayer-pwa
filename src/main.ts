@@ -109,7 +109,7 @@ class PwaPlayer {
 
     this.renderer = new RendererLite(
       {
-        cmsUrl: config.cmsAddress,
+        cmsUrl: config.cmsUrl,
         hardwareKey: config.hardwareKey
       },
       container,
@@ -1645,7 +1645,7 @@ class PwaPlayer {
       const version = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '?';
       const buildDate = typeof __BUILD_DATE__ !== 'undefined' ? __BUILD_DATE__.replace('T', ' ').replace(/\.\d+Z$/, '') : '';
       const versionStr = buildDate ? `v${version} (${buildDate})` : `v${version}`;
-      configEl.textContent = `${versionStr} | CMS: ${config.cmsAddress} | Display: ${config.displayName || 'Unknown'} | HW: ${config.hardwareKey}`;
+      configEl.textContent = `${versionStr} | CMS: ${config.cmsUrl} | Display: ${config.displayName || 'Unknown'} | HW: ${config.hardwareKey}`;
     }
   }
 

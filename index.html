@@ -107,14 +107,14 @@
 
     // Check if player is configured with valid CMS connection params
     const params = new URLSearchParams(window.location.search);
-    const hasUrlConfig = params.has('cmsAddress') && params.has('cmsKey');
+    const hasUrlConfig = params.has('cmsUrl') && params.has('cmsKey');
 
     let hasStoredConfig = false;
     try {
       const raw = localStorage.getItem('xibo_config');
       if (raw) {
         const cfg = JSON.parse(raw);
-        hasStoredConfig = !!(cfg.cmsAddress && cfg.cmsKey);
+        hasStoredConfig = !!(cfg.cmsUrl && cfg.cmsKey);
       }
     } catch (e) { /* corrupt config — treat as missing */ }
 
