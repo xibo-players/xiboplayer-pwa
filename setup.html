@@ -397,7 +397,7 @@
   </div>
 
   <script type="module">
-    import { config, CmsApiClient } from '@xiboplayer/utils';
+    import { config } from '@xiboplayer/utils';
     import { RestClient, XmdsClient } from '@xiboplayer/xmds';
 
     // Inject version from Vite build
@@ -422,6 +422,7 @@
     document.getElementById('hw-key-waiting').textContent = hwKey;
 
     // ── State ──
+    const previousCmsUrl = config.cmsUrl || '';
     let pollTimer = null;
     let countdownTimer = null;
     let pollSeconds = 15;
@@ -470,10 +471,19 @@
       }, 1000);
     }
 
-    function showSuccess() {
+    async function showSuccess() {
+      // If CMS URL changed, wipe all cached content (media, layouts, widgets
+      // from the old CMS are useless) and the SW's cached index.html (which
+      // may have a stale config injection script).
+      const newUrl = document.getElementById('cms-url').value.trim().replace(/\/$/, '');
+      if (newUrl !== previousCmsUrl) {
+        console.log('[Setup] CMS URL changed — wiping cached content');
+        const cacheNames = await caches.keys();
+        await Promise.all(cacheNames.map(name => caches.delete(name)));
+      }
       successFlash.classList.add('active');
       setTimeout(() => {
-        window.location.href = './index.html';
+        window.location.href = '/player/index.html';
       }, 800);
     }
 
@@ -513,35 +523,44 @@
       pollTimer = null;
     }
 
-    // ── Auto-authorize via CMS API ──
+    // ── Auto-authorize via CMS API (through rest-proxy to avoid CORS) ──
     async function tryAutoAuthorize(cmsUrl, hardwareKey) {
       const clientId = document.getElementById('api-client-id').value.trim();
       const clientSecret = document.getElementById('api-client-secret').value.trim();
       if (!clientId || !clientSecret) return false;
 
       try {
-        const api = new CmsApiClient({ baseUrl: cmsUrl, clientId, clientSecret });
-        await api.authenticate();
+        // Step 1: OAuth2 token via proxy
+        const tokenResp = await fetch(`/rest-proxy?cms=${encodeURIComponent(cmsUrl)}&path=/api/authorize/access_token`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({ grant_type: 'client_credentials', client_id: clientId, client_secret: clientSecret }),
+        });
+        if (!tokenResp.ok) throw new Error(`OAuth2 failed: ${tokenResp.status}`);
+        const { access_token } = await tokenResp.json();
 
-        const display = await api.findDisplay(hardwareKey);
-        if (!display) {
-          console.log('[Setup] Display not found via API (may not be registered yet)');
-          return false;
-        }
+        // Step 2: Find display by hardwareKey via proxy
+        const displayResp = await fetch(
+          `/rest-proxy?cms=${encodeURIComponent(cmsUrl)}&path=/api/display&hardwareKey=${encodeURIComponent(hardwareKey)}`,
+          { headers: { Authorization: `Bearer ${access_token}` } }
+        );
+        if (!displayResp.ok) throw new Error(`Find display failed: ${displayResp.status}`);
+        const displays = await displayResp.json();
+        if (!displays.length) { console.log('[Setup] Display not found via API (may not be registered yet)'); return false; }
 
-        if (display.licensed === 1) {
-          console.log('[Setup] Display already authorized');
-          return true;
-        }
+        const display = displays[0];
+        if (display.licensed === 1) { console.log('[Setup] Display already authorized'); return true; }
 
-        // Auto-authorize
-        await api.authorizeDisplay(display.displayId);
-        console.log('[Setup] Display auto-authorized via API!');
+        // Step 3: Authorize display via proxy
+        const authResp = await fetch(
+          `/rest-proxy?cms=${encodeURIComponent(cmsUrl)}&path=/api/display/authorise/${display.displayId}`,
+          { method: 'PUT', headers: { Authorization: `Bearer ${access_token}` } }
+        );
+        if (!authResp.ok) throw new Error(`Authorize failed: ${authResp.status}`);
 
-        // Save API credentials for future use
+        console.log('[Setup] Display auto-authorized via proxy!');
         config.apiClientId = clientId;
         config.apiClientSecret = clientSecret;
-
         return true;
       } catch (error) {
         console.warn('[Setup] Auto-authorize failed:', error.message);
@@ -573,7 +592,7 @@
     // ── Back to Player (cancel reconfiguration) ──
     function goBackToPlayer() {
       stopPolling();
-      window.location.href = './index.html';
+      window.location.href = '/player/index.html';
     }
     btnBackPlayer.addEventListener('click', goBackToPlayer);
 
@@ -630,18 +649,30 @@
       const cmsKey = document.getElementById('cms-key').value.trim();
       const displayName = document.getElementById('display-name').value.trim();
 
-      // Save config
-      config.cmsUrl = cmsUrl;
-      config.cmsKey = cmsKey;
-      config.displayName = displayName;
-
-      // Also backup hardware key to IndexedDB for stability
-      backupHardwareKey(config.hardwareKey);
-
-      // Test connection
+      // Write config.json via proxy (master config file)
+      // The boot path (proxy injection → Config.load()) handles the rest.
       try {
-        submitBtn.textContent = 'Connecting...';
+        submitBtn.textContent = 'Saving...';
         submitBtn.disabled = true;
+
+        const saveResp = await fetch('/config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ cmsUrl, cmsKey, displayName }),
+        });
+        if (!saveResp.ok) throw new Error('Failed to save config');
+
+        // Also update in-memory config for the test connection below
+        config.data.cmsUrl = cmsUrl;
+        config.data.cmsKey = cmsKey;
+        config.data.displayName = displayName;
+        config.save();
+
+        // Backup hardware key to IndexedDB for stability
+        backupHardwareKey(config.hardwareKey);
+
+        // Test connection
+        submitBtn.textContent = 'Connecting...';
 
         // Try REST first, fall back to SOAP
         transport = null; // reset transport for fresh detection
@@ -715,7 +746,7 @@
           const client = await getTransport();
           const result = await client.registerDisplay();
           if (result.code === 'READY') {
-            window.location.href = './index.html';
+            window.location.href = '/player/index.html';
           } else {
             // Not authorized — go straight to polling
             startPolling(config.displayName);
