@@ -313,8 +313,8 @@
     <div id="phase-setup" class="phase active">
       <form id="setup-form">
         <div class="form-group">
-          <label for="cms-address">CMS Address</label>
-          <input type="url" id="cms-address" placeholder="https://cms.example.com" required>
+          <label for="cms-url">CMS URL</label>
+          <input type="url" id="cms-url" placeholder="https://cms.example.com" required>
         </div>
 
         <div class="form-group">
@@ -509,13 +509,13 @@
     }
 
     // ── Auto-authorize via CMS API ──
-    async function tryAutoAuthorize(cmsAddress, hardwareKey) {
+    async function tryAutoAuthorize(cmsUrl, hardwareKey) {
       const clientId = document.getElementById('api-client-id').value.trim();
       const clientSecret = document.getElementById('api-client-secret').value.trim();
       if (!clientId || !clientSecret) return false;
 
       try {
-        const api = new CmsApiClient({ baseUrl: cmsAddress, clientId, clientSecret });
+        const api = new CmsApiClient({ baseUrl: cmsUrl, clientId, clientSecret });
         await api.authenticate();
 
         const display = await api.findDisplay(hardwareKey);
@@ -560,7 +560,7 @@
       if (enteredKey === config.cmsKey) {
         unlockError.style.display = 'none';
         // Pre-fill form with existing config
-        document.getElementById('cms-address').value = config.cmsUrl;
+        document.getElementById('cms-url').value = config.cmsUrl;
         document.getElementById('cms-key').value = config.cmsKey;
         document.getElementById('display-name').value = config.displayName;
         if (config.apiClientId) {
@@ -576,7 +576,7 @@
 
     // ── Pre-fill if first-time setup (no unlock gate) ──
     if (!isReconfigure && config.isConfigured()) {
-      document.getElementById('cms-address').value = config.cmsUrl;
+      document.getElementById('cms-url').value = config.cmsUrl;
       document.getElementById('cms-key').value = config.cmsKey;
       document.getElementById('display-name').value = config.displayName;
       if (config.apiClientId) {
@@ -590,12 +590,12 @@
       e.preventDefault();
       hideError();
 
-      const cmsAddress = document.getElementById('cms-address').value.trim().replace(/\/$/, '');
+      const cmsUrl = document.getElementById('cms-url').value.trim().replace(/\/$/, '');
       const cmsKey = document.getElementById('cms-key').value.trim();
       const displayName = document.getElementById('display-name').value.trim();
 
       // Save config
-      config.cmsUrl = cmsAddress;
+      config.cmsUrl = cmsUrl;
       config.cmsKey = cmsKey;
       config.displayName = displayName;
 
@@ -617,7 +617,7 @@
         } else {
           // Try auto-authorize via CMS API if credentials provided
           submitBtn.textContent = 'Authorizing...';
-          const autoAuthed = await tryAutoAuthorize(cmsAddress, hwKey);
+          const autoAuthed = await tryAutoAuthorize(cmsUrl, hwKey);
 
           if (autoAuthed) {
             // Verify registration
