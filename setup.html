@@ -347,6 +347,7 @@
         </details>
 
         <button type="submit" id="submit-btn" disabled>Loading...</button>
+        <button type="button" id="btn-back-player" class="btn-secondary" style="display: none;">Back to Player</button>
       </form>
 
       <div id="error" class="error-msg"></div>
@@ -385,8 +386,8 @@
       </div>
     </div>
 
-    <div class="footer">
-      Xibo Player v0.1.0
+    <div class="footer" id="version-footer">
+      Xibo Player
     </div>
   </div>
 
@@ -398,6 +399,10 @@
   <script type="module">
     import { config, CmsApiClient } from '@xiboplayer/utils';
     import { RestClient, XmdsClient } from '@xiboplayer/xmds';
+
+    // Inject version from Vite build
+    const appVersion = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '?';
+    document.getElementById('version-footer').textContent = `Xibo Player v${appVersion}`;
 
     // ── Elements ──
     const form = document.getElementById('setup-form');
@@ -546,9 +551,40 @@
 
     // ── Unlock gate for reconfiguration ──
     const isReconfigure = config.isConfigured() && config.cmsKey;
-    if (isReconfigure) {
+    const alreadyUnlocked = new URLSearchParams(window.location.search).has('unlocked');
+    const btnBackPlayer = document.getElementById('btn-back-player');
+    if (isReconfigure && !alreadyUnlocked) {
       // Show unlock phase instead of setup form
       showPhase(phaseUnlock);
+    }
+    if (isReconfigure || alreadyUnlocked) {
+      // Show "Back to Player" on the setup form
+      btnBackPlayer.style.display = 'block';
+      // Pre-fill form with existing config
+      document.getElementById('cms-url').value = config.cmsUrl;
+      document.getElementById('cms-key').value = config.cmsKey;
+      document.getElementById('display-name').value = config.displayName;
+      if (config.apiClientId) {
+        document.getElementById('api-client-id').value = config.apiClientId;
+        document.getElementById('api-client-secret').value = config.apiClientSecret || '';
+      }
+    }
+
+    // ── Back to Player (cancel reconfiguration) ──
+    function goBackToPlayer() {
+      stopPolling();
+      window.location.href = './index.html';
+    }
+    btnBackPlayer.addEventListener('click', goBackToPlayer);
+
+    // Esc also goes back to player when reconfiguring
+    if (isReconfigure || alreadyUnlocked) {
+      document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          goBackToPlayer();
+        }
+      });
     }
 
     // ── Unlock form handler ──

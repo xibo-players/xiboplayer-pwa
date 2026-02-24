@@ -15,6 +15,7 @@ import { PlayerCore } from '@xiboplayer/core';
 import { createLogger, isDebug, registerLogSink } from '@xiboplayer/utils';
 import { DownloadOverlay, getDefaultOverlayConfig } from './download-overlay.js';
 import { TimelineOverlay, isTimelineVisible } from './timeline-overlay.js';
+import { SetupOverlay } from './setup-overlay.js';
 
 declare const __APP_VERSION__: string;
 declare const __BUILD_DATE__: string;
@@ -48,6 +49,7 @@ class PwaPlayer {
   private xmds!: any;
   private downloadOverlay: DownloadOverlay | null = null;
   private timelineOverlay: TimelineOverlay | null = null;
+  private setupOverlay: SetupOverlay | null = null;
   private statsCollector: any = null;
   private logReporter: any = null;
   private displaySettings: any = null;
@@ -827,8 +829,11 @@ class PwaPlayer {
           break;
         case 's':
         case 'S':
-          log.info('[Remote] Open setup page (keyboard)');
-          window.location.href = './setup.html';
+          if (!this.setupOverlay) {
+            this.setupOverlay = new SetupOverlay();
+          }
+          this.setupOverlay.toggle();
+          e.preventDefault(); // prevent 's' from being typed into the focused input
           break;
       }
     });
