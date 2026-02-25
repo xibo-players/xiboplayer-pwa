@@ -1033,12 +1033,6 @@ class PwaPlayer {
       // Update timeline overlay highlight
       this.timelineOverlay?.update(null, layoutId);
 
-      // Correct timeline duration if renderer discovered actual duration
-      // (e.g., video loadedmetadata replaces the 60s estimate)
-      if (_layout?.duration) {
-        this.core.recordLayoutDuration(String(layoutId), _layout.duration);
-      }
-
       // Track stats: start layout (only if enableStat is not disabled)
       if (this.statsCollector && this._currentLayoutEnableStat) {
         this.statsCollector.startLayout(layoutId, this.currentScheduleId).catch((err: any) => {

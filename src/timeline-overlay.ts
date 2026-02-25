@@ -112,7 +112,7 @@ export class TimelineOverlay {
     const currentEntry = this.currentLayoutId !== null
       ? this.timeline.find(e => {
           const id = parseInt(e.layoutFile.replace('.xlf', ''), 10);
-          return id === this.currentLayoutId && e.endTime > now;
+          return id === this.currentLayoutId && e.startTime <= now && e.endTime > now;
         })
       : null;
 
@@ -168,7 +168,9 @@ export class TimelineOverlay {
       const hover = clickable && !isCurrent ? 'onmouseover="this.style.background=\'rgba(255,255,255,0.1)\'" onmouseout="this.style.background=\'none\'"' : '';
 
       html += `<div data-layout-id="${layoutId}" style="${borderLeft} ${color} ${cursor} margin-bottom: 0.3vh; font-family: monospace; font-size: 1.3vw; line-height: 1.5; white-space: nowrap;" ${hover}>`;
-      html += `${startStr}–${endStr}  #${layoutId}  ${durStr}`;
+      const idCol = `#${layoutId}`.padEnd(4).replace(/ /g, '&nbsp;');
+      const durPad = durStr.padStart(7).replace(/ /g, '&nbsp;');
+      html += `${startStr}–${endStr} ${idCol}${durPad}`;
       if (entry.isDefault) html += ' <span style="color: #888;">[def]</span>';
       if (entry.hidden && entry.hidden.length > 0) {
         const hiddenIds = entry.hidden.map(h => `#${h.file.replace('.xlf', '')} (p${h.priority})`).join(', ');
