@@ -1,6 +1,6 @@
 {
   "name": "@xiboplayer/pwa",
-  "version": "0.5.6",
+  "version": "0.5.7",
   "description": "Lightweight PWA Xibo Player with RendererLite",
   "type": "module",
   "files": [
@@ -13,18 +13,18 @@
     "type-check": "tsc --noEmit"
   },
   "dependencies": {
-    "@xiboplayer/cache": "0.5.6",
-    "@xiboplayer/core": "0.5.6",
-    "@xiboplayer/crypto": "0.5.6",
-    "@xiboplayer/renderer": "0.5.6",
-    "@xiboplayer/schedule": "0.5.6",
-    "@xiboplayer/settings": "0.5.6",
-    "@xiboplayer/stats": "0.5.6",
-    "@xiboplayer/sw": "0.5.6",
-    "@xiboplayer/sync": "0.5.6",
-    "@xiboplayer/utils": "0.5.6",
-    "@xiboplayer/xmds": "0.5.6",
-    "@xiboplayer/xmr": "0.5.6",
+    "@xiboplayer/cache": "0.5.7",
+    "@xiboplayer/core": "0.5.7",
+    "@xiboplayer/crypto": "0.5.7",
+    "@xiboplayer/renderer": "0.5.7",
+    "@xiboplayer/schedule": "0.5.7",
+    "@xiboplayer/settings": "0.5.7",
+    "@xiboplayer/stats": "0.5.7",
+    "@xiboplayer/sw": "0.5.7",
+    "@xiboplayer/sync": "0.5.7",
+    "@xiboplayer/utils": "0.5.7",
+    "@xiboplayer/xmds": "0.5.7",
+    "@xiboplayer/xmr": "0.5.7",
     "html2canvas": "^1.4.1",
     "nanoevents": "^9.0.0",
     "xml2js": "^0.6.2"
