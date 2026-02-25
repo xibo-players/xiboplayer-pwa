@@ -171,7 +171,7 @@ export class TimelineOverlay {
   }
 
   private formatTime(date: Date): string {
-    return date.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+    return date.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
   }
 
   private formatDuration(seconds: number): string {
