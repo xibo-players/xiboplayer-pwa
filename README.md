@@ -40,6 +40,48 @@ All overlays and controls are hidden by default for clean kiosk operation.
 
 Timeline overlay also supports **click-to-skip** — click any layout in the timeline to jump directly to it.
 
+## Auto-authorize via CMS API (optional)
+
+By default, new displays must be manually authorized by a CMS administrator. To skip this step and have the player authorize itself automatically, provide OAuth2 API credentials — either via the setup page or via `config.json` provisioning in the Electron/Chromium shells.
+
+### How it works
+
+After the player registers with the CMS (via XMDS `RegisterDisplay`), it uses the CMS REST API with an OAuth2 `client_credentials` flow to:
+
+1. Obtain an access token from `/api/authorize/access_token`
+2. Find the display by hardware key via `GET /api/display?hardwareKey=...`
+3. Authorize the display via `PUT /api/display/{id}/authorise`
+
+If auto-authorize fails (wrong credentials, missing scope, CMS unreachable), the player silently falls back to manual authorization — the CMS administrator sees the display as "Awaiting approval".
+
+### CMS setup
+
+1. In the CMS, go to **Administration > Applications**
+2. Click **Add Application**
+3. Set **Grant Type** to `client_credentials`
+4. **Important:** on the **Scopes** tab (2nd tab), enable the **`displays`** scope — this is required for the player to find and authorize itself
+5. Save and copy the **Client ID** and **Client Secret**
+
+Without the `displays` scope enabled, the API will return `403 Forbidden` and auto-authorize will not work.
+
+### Interactive setup
+
+In the setup page, expand "Auto-authorize via API (optional)" and enter the Client ID and Client Secret. These are saved to localStorage alongside the CMS configuration.
+
+### Provisioning via config.json
+
+When using the Electron or Chromium shells, add the credentials to `config.json`:
+
+```json
+{
+  "cmsUrl": "https://your-cms.example.com",
+  "cmsKey": "your-cms-key",
+  "displayName": "Lobby Display",
+  "apiClientId": "your-client-id",
+  "apiClientSecret": "your-client-secret"
+}
+```
+
 ## Debug Overlays
 
 Three toggleable overlays provide real-time insight into player operation without leaving the playback screen. All are hidden by default for clean kiosk operation — press the corresponding key to toggle.
