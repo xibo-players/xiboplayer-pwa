@@ -13,18 +13,18 @@
     "type-check": "tsc --noEmit"
   },
   "dependencies": {
-    "@xiboplayer/cache": "latest",
-    "@xiboplayer/core": "latest",
-    "@xiboplayer/crypto": "latest",
-    "@xiboplayer/renderer": "latest",
-    "@xiboplayer/schedule": "latest",
-    "@xiboplayer/settings": "latest",
-    "@xiboplayer/stats": "latest",
-    "@xiboplayer/sw": "latest",
-    "@xiboplayer/sync": "latest",
-    "@xiboplayer/utils": "latest",
-    "@xiboplayer/xmds": "latest",
-    "@xiboplayer/xmr": "latest",
+    "@xiboplayer/cache": "0.5.5",
+    "@xiboplayer/core": "0.5.5",
+    "@xiboplayer/crypto": "0.5.5",
+    "@xiboplayer/renderer": "0.5.5",
+    "@xiboplayer/schedule": "0.5.5",
+    "@xiboplayer/settings": "0.5.5",
+    "@xiboplayer/stats": "0.5.5",
+    "@xiboplayer/sw": "0.5.5",
+    "@xiboplayer/sync": "0.5.5",
+    "@xiboplayer/utils": "0.5.5",
+    "@xiboplayer/xmds": "0.5.5",
+    "@xiboplayer/xmr": "0.5.5",
     "html2canvas": "^1.4.1",
     "nanoevents": "^9.0.0",
     "xml2js": "^0.6.2"
@@ -42,21 +42,5 @@
     "type": "git",
     "url": "git+https://github.com/xibo-players/xiboplayer-pwa.git"
   },
-  "homepage": "https://xiboplayer.org",
-  "pnpm": {
-    "overrides": {
-      "@xiboplayer/utils": "link:../xiboplayer/packages/utils",
-      "@xiboplayer/renderer": "link:../xiboplayer/packages/renderer",
-      "@xiboplayer/schedule": "link:../xiboplayer/packages/schedule",
-      "@xiboplayer/cache": "link:../xiboplayer/packages/cache",
-      "@xiboplayer/xmds": "link:../xiboplayer/packages/xmds",
-      "@xiboplayer/xmr": "link:../xiboplayer/packages/xmr",
-      "@xiboplayer/core": "link:../xiboplayer/packages/core",
-      "@xiboplayer/stats": "link:../xiboplayer/packages/stats",
-      "@xiboplayer/settings": "link:../xiboplayer/packages/settings",
-      "@xiboplayer/sw": "link:../xiboplayer/packages/sw",
-      "@xiboplayer/crypto": "link:../xiboplayer/packages/crypto",
-      "@xiboplayer/sync": "link:../xiboplayer/packages/sync"
-    }
-  }
+  "homepage": "https://xiboplayer.org"
 }

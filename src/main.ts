@@ -56,6 +56,7 @@ class PwaPlayer {
   private currentScheduleId: number = -1; // Track scheduleId for stats
   private scheduledLayoutIds: Set<number> = new Set(); // Layout IDs from current schedule
   private preparingLayoutId: number | null = null; // Guard against concurrent prepareAndRenderLayout calls
+  private _pendingRetryLayoutId: number | null = null; // Queued retry when check-pending-layout arrives during preparation
   private _screenshotInterval: any = null;
   private _screenshotMethod: 'electron' | 'native' | 'html2canvas' | null = null;
   private _screenshotInFlight = false; // Concurrency guard — one capture at a time
@@ -1265,10 +1266,13 @@ class PwaPlayer {
       return;
     }
 
-    // Guard: prevent concurrent preparations of the same layout
-    // (e.g., two check-pending-layout events firing close together)
+    // Guard: prevent concurrent preparations of the same layout.
+    // Instead of dropping the event (which caused permanent stalls when the
+    // first attempt failed due to Cache API race), schedule a retry after
+    // the current preparation finishes.
     if (this.preparingLayoutId === layoutId) {
-      log.debug(`Layout ${layoutId} preparation already in progress, skipping`);
+      log.debug(`Layout ${layoutId} preparation in progress, will retry after it completes`);
+      this._pendingRetryLayoutId = layoutId;
       return;
     }
 
@@ -1329,6 +1333,17 @@ class PwaPlayer {
       });
     } finally {
       this.preparingLayoutId = null;
+
+      // If another check-pending-layout arrived while we were preparing,
+      // retry after a short delay to let the Cache API settle.
+      // This fixes the race where FILE_CACHED notification arrives before
+      // the Cache API put() is visible to HEAD requests.
+      const retryId = this._pendingRetryLayoutId;
+      this._pendingRetryLayoutId = null;
+      if (retryId !== null && retryId !== undefined && this.core.getCurrentLayoutId() !== retryId) {
+        log.debug(`Retrying preparation for layout ${retryId} after 500ms`);
+        setTimeout(() => this.prepareAndRenderLayout(retryId), 500);
+      }
     }
   }
 
@@ -1369,73 +1384,69 @@ class PwaPlayer {
    * Check if all required media files are cached and ready
    */
   private async checkAllMediaCached(mediaIds: number[], videoMediaIds: number[] = []): Promise<boolean> {
+    // Access Cache API directly from the main thread — avoids the race condition
+    // where a HEAD request to the SW returns 404 immediately after cache.put()
+    // because the Cache API hasn't fully committed yet for cross-context reads.
+    const cache = await caches.open('xibo-media-v1');
+
     for (const mediaId of mediaIds) {
       try {
-        // Use CacheProxy API - it delegates to SW's CacheManager.fileExists()
-        const exists = await cacheProxy.hasFile('media', String(mediaId));
+        // Check both whole-file and chunked storage directly via Cache API
+        const cacheKey = `${PLAYER_BASE}/cache/media/${mediaId}`;
+        const wholeFile = await cache.match(cacheKey);
+        const metadataResponse = await cache.match(`${cacheKey}/metadata`);
 
-        if (!exists) {
+        if (!wholeFile && !metadataResponse) {
           log.debug(`Media ${mediaId} not yet cached`);
           return false;
         }
 
-        // File exists (either whole file or chunks) - now validate it
-        // Check for chunked storage via metadata
-        const cache = await caches.open('xibo-media-v1');
-        const metadataResponse = await cache.match(`${PLAYER_BASE}/cache/media/${mediaId}/metadata`);
-
         if (metadataResponse) {
-          {
-            const metadataText = await metadataResponse.text();
-            const metadata = JSON.parse(metadataText);
-            const sizeMB = (metadata.totalSize / 1024 / 1024).toFixed(1);
-            const isVideo = videoMediaIds.includes(mediaId);
+          const metadataText = await metadataResponse.text();
+          const metadata = JSON.parse(metadataText);
+          const sizeMB = (metadata.totalSize / 1024 / 1024).toFixed(1);
+          const isVideo = videoMediaIds.includes(mediaId);
 
-            if (isVideo) {
-              // Video: early playback — need chunk 0 (ftyp header) + last chunk (moov atom).
-              // Download manager prioritizes these two chunks first (out-of-order download).
-              // SW's Range handler retries up to 60s per chunk for middle ones still downloading.
-              const chunk0 = await cache.match(`${PLAYER_BASE}/cache/media/${mediaId}/chunk-0`);
-              if (!chunk0) {
-                log.debug(`Media ${mediaId} video: chunk 0 not yet available`);
-                return false;
-              }
-              const lastIdx = metadata.numChunks - 1;
-              if (lastIdx > 0) {
-                const lastChunk = await cache.match(`${PLAYER_BASE}/cache/media/${mediaId}/chunk-${lastIdx}`);
-                if (!lastChunk) {
-                  log.debug(`Media ${mediaId} video: last chunk (${lastIdx}) not yet available`);
-                  return false;
-                }
-              }
-              log.info(`Media ${mediaId} video ready for early playback (chunk 0 + ${lastIdx} of ${metadata.numChunks}, ${sizeMB} MB total)`);
-            } else {
-              // Non-video: require all chunks (last chunk present = all downloaded)
-              const lastChunkKey = `${PLAYER_BASE}/cache/media/${mediaId}/chunk-${metadata.numChunks - 1}`;
-              const lastChunk = await cache.match(lastChunkKey);
-              if (!lastChunk) {
-                log.debug(`Media ${mediaId} chunked but still downloading (chunk ${metadata.numChunks - 1} missing)`);
-                return false;
-              }
-              log.debug(`Media ${mediaId} cached as chunks (${metadata.numChunks} x ${(metadata.chunkSize / 1024 / 1024).toFixed(0)} MB = ${sizeMB} MB total)`);
+          if (isVideo) {
+            // Video: early playback — need chunk 0 (ftyp header) + last chunk (moov atom).
+            // Download manager prioritizes these two chunks first (out-of-order download).
+            // SW's Range handler retries up to 60s per chunk for middle ones still downloading.
+            const chunk0 = await cache.match(`${cacheKey}/chunk-0`);
+            if (!chunk0) {
+              log.debug(`Media ${mediaId} video: chunk 0 not yet available`);
+              return false;
             }
-            continue;
+            const lastIdx = metadata.numChunks - 1;
+            if (lastIdx > 0) {
+              const lastChunk = await cache.match(`${cacheKey}/chunk-${lastIdx}`);
+              if (!lastChunk) {
+                log.debug(`Media ${mediaId} video: last chunk (${lastIdx}) not yet available`);
+                return false;
+              }
+            }
+            log.info(`Media ${mediaId} video ready for early playback (chunk 0 + ${lastIdx} of ${metadata.numChunks}, ${sizeMB} MB total)`);
+          } else {
+            // Non-video: require all chunks (last chunk present = all downloaded)
+            const lastChunk = await cache.match(`${cacheKey}/chunk-${metadata.numChunks - 1}`);
+            if (!lastChunk) {
+              log.debug(`Media ${mediaId} chunked but still downloading (chunk ${metadata.numChunks - 1} missing)`);
+              return false;
+            }
+            log.debug(`Media ${mediaId} cached as chunks (${metadata.numChunks} x ${(metadata.chunkSize / 1024 / 1024).toFixed(0)} MB = ${sizeMB} MB total)`);
           }
+          continue;
         }
 
         // Validate cached whole file (detect corrupted entries)
-        const cacheKey = `${PLAYER_BASE}/cache/media/${mediaId}`;
-        const response = await cache.match(cacheKey);
-        if (!response) continue; // Shouldn't happen — hasFile was true
+        if (!wholeFile) continue;
 
-        const contentType = response.headers.get('Content-Type') || '';
-        const blob = await response.blob();
+        const contentType = wholeFile.headers.get('Content-Type') || '';
+        const blob = await wholeFile.blob();
 
         // Check for bad cache
         if (contentType === 'text/plain' || blob.size < 100) {
           log.warn(`Media ${mediaId} corrupted (${contentType}, ${blob.size} bytes) - will re-download`);
           await cache.delete(cacheKey);
-
           return false;
         }
 
