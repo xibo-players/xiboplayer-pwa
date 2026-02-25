@@ -124,7 +124,21 @@ export class TimelineOverlay {
 
     // Build final list: current layout always first, then future entries
     const entries: TimelineEntry[] = [];
-    if (currentEntry) entries.push(currentEntry);
+    let effectiveCurrent: TimelineEntry | null = currentEntry ?? null;
+    if (currentEntry) {
+      entries.push(currentEntry);
+    } else if (this.currentLayoutId !== null && futureEntries.length > 0) {
+      // Playing a layout not in the timeline (e.g. default layout filling a gap)
+      // — synthesize a "now playing" entry until the next scheduled layout starts
+      effectiveCurrent = {
+        layoutFile: `${this.currentLayoutId}.xlf`,
+        startTime: now,
+        endTime: futureEntries[0].startTime,
+        duration: (futureEntries[0].startTime.getTime() - now.getTime()) / 1000,
+        isDefault: true,
+      } as TimelineEntry;
+      entries.push(effectiveCurrent);
+    }
     entries.push(...futureEntries);
 
     if (entries.length === 0) {
@@ -142,7 +156,7 @@ export class TimelineOverlay {
 
     for (const entry of visible) {
       const layoutId = parseInt(entry.layoutFile.replace('.xlf', ''), 10);
-      const isCurrent = entry === currentEntry;
+      const isCurrent = entry === effectiveCurrent;
 
       const startStr = this.formatTime(entry.startTime);
       const endStr = this.formatTime(entry.endTime);
