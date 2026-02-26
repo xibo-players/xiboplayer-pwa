@@ -8,7 +8,7 @@
 // @ts-ignore - JavaScript module
 import { RendererLite } from '@xiboplayer/renderer';
 // @ts-ignore - JavaScript module
-import { CacheProxy } from '@xiboplayer/cache';
+import { StoreClient, DownloadClient } from '@xiboplayer/cache';
 // @ts-ignore - JavaScript module
 import { PlayerCore } from '@xiboplayer/core';
 // @ts-ignore - JavaScript module
@@ -32,7 +32,8 @@ let config: any;
 let RestClient: any;
 let XmdsClient: any;
 let XmrWrapper: any;
-let cacheProxy: CacheProxy;
+let store: StoreClient;
+let downloads: DownloadClient;
 let StatsCollector: any;
 let formatStats: any;
 let LogReporter: any;
@@ -67,6 +68,9 @@ class PwaPlayer {
   private _probeTimer: any = null; // Debounce timer for duration probing
   private _pendingFollowerStats: any[] | null = null; // In-flight stats delegated to lead
   private _pendingFollowerLogs: any[] | null = null; // In-flight logs delegated to lead
+  private _iframeObserver: MutationObserver | null = null; // Iframe key-forwarding observer
+  private _swIcHandler: any = null; // SW Interactive Control message handler
+  private _swFileCachedHandler: any = null; // SW FILE_CACHED message handler
 
   async init() {
     log.info('Initializing player with RendererLite + PlayerCore...');
@@ -98,11 +102,12 @@ class PwaPlayer {
       }
     }
 
-    // Initialize CacheProxy (Service Worker only - waits for SW to be ready)
-    log.info('Initializing CacheProxy...');
-    cacheProxy = new CacheProxy();
-    await cacheProxy.init();  // Waits for Service Worker to be ready and controlling
-    log.info('CacheProxy ready - using Service Worker backend');
+    // Initialize StoreClient (REST) + DownloadClient (SW postMessage)
+    log.info('Initializing cache clients...');
+    store = new StoreClient();
+    downloads = new DownloadClient();
+    await downloads.init();  // Waits for Service Worker to be ready and controlling
+    log.info('Cache clients ready — StoreClient + DownloadClient');
 
     // Create renderer
     const container = document.getElementById('player-container');
@@ -122,7 +127,7 @@ class PwaPlayer {
           log.debug(`getMediaUrl called for media ${fileId}`);
 
           // Check if file exists in cache (no blob creation - streaming!)
-          const exists = await cacheProxy.hasFile('media', String(fileId));
+          const exists = await store.has('media', String(fileId));
 
           if (!exists) {
             log.warn(`Media ${fileId} not in cache`);
@@ -136,26 +141,22 @@ class PwaPlayer {
           return streamingUrl;
         },
 
-        // Provide widget HTML resolver
+        // Provide widget HTML resolver — check ContentStore via proxy
         getWidgetHtml: async (widget: any) => {
-          const cacheKey = `${PLAYER_BASE}/cache/widget/${widget.layoutId}/${widget.regionId}/${widget.id}`;
-          log.debug(`Looking for widget HTML at: ${cacheKey}`, widget);
+          const storeKey = `widget/${widget.layoutId}/${widget.regionId}/${widget.id}`;
+          const cacheUrl = `${PLAYER_BASE}/cache/widget/${widget.layoutId}/${widget.regionId}/${widget.id}`;
+          log.debug(`Looking for widget HTML at: ${storeKey}`, widget);
 
           try {
-            const cache = await caches.open('xibo-media-v1');
-            const response = await cache.match(cacheKey);
-
-            if (response) {
-              log.debug(`Widget HTML cached at ${cacheKey}, using cache URL for iframe`);
-              // Return cache URL + fallback HTML for hard reload recovery
-              // On Ctrl+Shift+R, iframe.src navigation bypasses SW → 404
-              // Renderer detects this and falls back to widget.raw (original CMS URLs)
-              return { url: cacheKey, fallback: widget.raw || '' };
+            const exists = await store.has('widget', `${widget.layoutId}/${widget.regionId}/${widget.id}`);
+            if (exists) {
+              log.debug(`Widget HTML found in store: ${storeKey}, using cache URL for iframe`);
+              return { url: cacheUrl, fallback: widget.raw || '' };
             } else {
-              log.warn(`No cached HTML found at ${cacheKey}`);
+              log.warn(`No widget HTML found in store: ${storeKey}`);
             }
           } catch (error) {
-            log.error(`Failed to get cached widget HTML for ${widget.id}:`, error);
+            log.error(`Failed to check widget HTML for ${widget.id}:`, error);
           }
 
           // Fallback to widget.raw (XLF template)
@@ -169,7 +170,7 @@ class PwaPlayer {
     this.core = new PlayerCore({
       config,
       xmds: this.xmds,
-      cache: cacheProxy,
+      cache: store,
       schedule: scheduleManager,
       renderer: this.renderer,
       xmrWrapper: XmrWrapper,
@@ -492,7 +493,7 @@ class PwaPlayer {
 
     this.core.on('purge-request', async (purgeFiles: any[]) => {
       try {
-        const result = await cacheProxy.deleteFiles(purgeFiles);
+        const result = await store.remove(purgeFiles);
         log.info(`Purge complete: ${result.deleted}/${result.total} files deleted`);
       } catch (error) {
         log.warn('Purge failed:', error);
@@ -500,12 +501,12 @@ class PwaPlayer {
     });
 
     this.core.on('download-request', async (groupedFiles: any) => {
-      // Platform handles the actual download via CacheProxy
+      // Platform handles the actual download via DownloadClient
       // Restart overlay polling while downloads are active
       this.downloadOverlay?.startUpdating();
       try {
         // groupedFiles is { layouts: [{ layoutId, mediaFiles }] }
-        await cacheProxy.requestDownload(groupedFiles);
+        await downloads.download(groupedFiles);
         log.info('Download request complete');
       } catch (error) {
         log.error('Download request failed:', error);
@@ -632,10 +633,18 @@ class PwaPlayer {
       log.info('Purging all cached content...');
       this.updateStatus('Purging cache...');
       try {
-        // Delete all caches
+        // Delete all files from ContentStore
+        const allFiles = await store.list();
+        if (allFiles.length > 0) {
+          const result = await store.remove(allFiles);
+          log.info(`Purged ${result.deleted} files from ContentStore`);
+        }
+        // Clean up any legacy Cache API caches (pre-ContentStore migration)
         const cacheNames = await caches.keys();
-        await Promise.all(cacheNames.map(name => caches.delete(name)));
-        log.info(`Purged ${cacheNames.length} caches`);
+        if (cacheNames.length > 0) {
+          await Promise.all(cacheNames.map(name => caches.delete(name)));
+          log.info(`Purged ${cacheNames.length} legacy caches`);
+        }
       } catch (error) {
         log.error('Cache purge failed:', error);
       }
@@ -710,7 +719,7 @@ class PwaPlayer {
    * IC library in widget iframes makes XHR to /player/pwa/ic/*, SW forwards here.
    */
   private setupInteractiveControl() {
-    navigator.serviceWorker?.addEventListener('message', (event: any) => {
+    this._swIcHandler = (event: any) => {
       if (event.data?.type !== 'INTERACTIVE_CONTROL') return;
 
       const { method, path, search, body } = event.data;
@@ -719,7 +728,8 @@ class PwaPlayer {
 
       const response = this.handleInteractiveControl(method, path, search, body);
       port.postMessage(response);
-    });
+    };
+    navigator.serviceWorker?.addEventListener('message', this._swIcHandler);
   }
 
   /**
@@ -763,7 +773,7 @@ class PwaPlayer {
 
     // Attach to existing and future iframes
     Array.from(document.querySelectorAll('iframe')).forEach(f => attachIframeKeyForwarder(f as HTMLIFrameElement));
-    const iframeObserver = new MutationObserver((mutations) => {
+    this._iframeObserver = new MutationObserver((mutations) => {
       for (const m of mutations) {
         for (const node of m.addedNodes) {
           if (node instanceof HTMLIFrameElement) attachIframeKeyForwarder(node);
@@ -773,7 +783,7 @@ class PwaPlayer {
         }
       }
     });
-    iframeObserver.observe(document.body, { childList: true, subtree: true });
+    this._iframeObserver.observe(document.body, { childList: true, subtree: true });
 
     // Keyboard / presenter remote (clicker) controls
     document.addEventListener('keydown', (e: KeyboardEvent) => {
@@ -997,7 +1007,7 @@ class PwaPlayer {
   private setupServiceWorkerEventHandlers() {
     if (!navigator.serviceWorker) return;
 
-    navigator.serviceWorker.addEventListener('message', (event: any) => {
+    this._swFileCachedHandler = (event: any) => {
       const { type, fileId, fileType } = event.data;
 
       if (type === 'FILE_CACHED') {
@@ -1016,7 +1026,8 @@ class PwaPlayer {
           this.probeLayoutDurations().catch(() => {});
         }, 3000);
       }
-    });
+    };
+    navigator.serviceWorker.addEventListener('message', this._swFileCachedHandler);
   }
 
   /**
@@ -1217,7 +1228,7 @@ class PwaPlayer {
         log.info(`Preloading next layout ${nextLayoutId}...`);
 
         // Get XLF from cache
-        const xlfBlob = await cacheProxy.getFile('layout', nextLayoutId);
+        const xlfBlob = await store.get('layout', nextLayoutId);
         if (!xlfBlob) {
           log.debug(`Layout ${nextLayoutId} XLF not cached, skipping preload`);
           return;
@@ -1226,8 +1237,8 @@ class PwaPlayer {
         const xlfXml = await xlfBlob.text();
 
         // Check if all required media is cached
-        const { allMedia: requiredMedia, videoMedia: videoMediaIds } = this.getMediaIds(xlfXml);
-        const allMediaCached = await this.checkAllMediaCached(requiredMedia, videoMediaIds);
+        const { allMedia: requiredMedia } = this.getMediaIds(xlfXml);
+        const allMediaCached = await this.checkAllMediaCached(requiredMedia);
 
         if (!allMediaCached) {
           log.debug(`Media not fully cached for layout ${nextLayoutId}, skipping preload`);
@@ -1236,11 +1247,6 @@ class PwaPlayer {
 
         // Fetch widget HTML before preloading (same as prepareAndRenderLayout)
         await this.fetchWidgetHtml(xlfXml, nextLayoutId);
-
-        // Pre-warm video chunks in SW BlobCache
-        if (videoMediaIds.length > 0) {
-          await cacheProxy.prewarmVideoChunks(videoMediaIds);
-        }
 
         // Preload the layout into the renderer's pool
         const success = await this.renderer.preloadLayout(xlfXml, nextLayoutId);
@@ -1268,7 +1274,7 @@ class PwaPlayer {
 
     // Guard: prevent concurrent preparations of the same layout.
     // Instead of dropping the event (which caused permanent stalls when the
-    // first attempt failed due to Cache API race), schedule a retry after
+    // first attempt failed due to a store race), schedule a retry after
     // the current preparation finishes.
     if (this.preparingLayoutId === layoutId) {
       log.debug(`Layout ${layoutId} preparation in progress, will retry after it completes`);
@@ -1279,7 +1285,7 @@ class PwaPlayer {
     this.preparingLayoutId = layoutId;
     try {
       // Get XLF from cache
-      const xlfBlob = await cacheProxy.getFile('layout', layoutId);
+      const xlfBlob = await store.get('layout', layoutId);
       if (!xlfBlob) {
         log.info('Layout not in cache yet, marking as pending:', layoutId);
         // Mark layout as pending so when it downloads, we'll retry
@@ -1292,13 +1298,13 @@ class PwaPlayer {
       const xlfXml = await xlfBlob.text();
 
       // Check if all required media is cached
-      const { allMedia: requiredMedia, videoMedia: videoMediaIds } = this.getMediaIds(xlfXml);
-      const allMediaCached = await this.checkAllMediaCached(requiredMedia, videoMediaIds);
+      const { allMedia: requiredMedia } = this.getMediaIds(xlfXml);
+      const allMediaCached = await this.checkAllMediaCached(requiredMedia);
 
       if (!allMediaCached) {
         // Reorder download queue: current layout's media first, hold others.
         // All files (including all chunks) must complete before other layouts start.
-        cacheProxy.prioritizeLayoutFiles(requiredMedia.map(String));
+        downloads.prioritizeLayout(requiredMedia.map(String));
 
         log.info(`Waiting for media to finish downloading for layout ${layoutId}`);
         this.updateStatus(`Preparing layout ${layoutId}...`);
@@ -1308,12 +1314,6 @@ class PwaPlayer {
 
       // Fetch widget HTML for all widgets in the layout
       await this.fetchWidgetHtml(xlfXml, layoutId);
-
-      // Pre-warm video chunks in SW BlobCache (first + last chunks for moov atom)
-      if (videoMediaIds.length > 0) {
-        log.info(`Pre-warming ${videoMediaIds.length} video file(s) for layout ${layoutId}`);
-        await cacheProxy.prewarmVideoChunks(videoMediaIds);
-      }
 
       // Render layout
       await this.renderer.renderLayout(xlfXml, layoutId);
@@ -1335,9 +1335,9 @@ class PwaPlayer {
       this.preparingLayoutId = null;
 
       // If another check-pending-layout arrived while we were preparing,
-      // retry after a short delay to let the Cache API settle.
+      // retry after a short delay to let the ContentStore settle.
       // This fixes the race where FILE_CACHED notification arrives before
-      // the Cache API put() is visible to HEAD requests.
+      // the PUT to ContentStore is visible to HEAD requests.
       const retryId = this._pendingRetryLayoutId;
       this._pendingRetryLayoutId = null;
       if (retryId !== null && retryId !== undefined && this.core.getCurrentLayoutId() !== retryId) {
@@ -1381,81 +1381,18 @@ class PwaPlayer {
   }
 
   /**
-   * Check if all required media files are cached and ready
+   * Check if all required media files are cached and ready.
+   * Uses StoreClient.has() → HEAD /store/:type/:id to check ContentStore on the proxy.
    */
-  private async checkAllMediaCached(mediaIds: number[], videoMediaIds: number[] = []): Promise<boolean> {
-    // Access Cache API directly from the main thread — avoids the race condition
-    // where a HEAD request to the SW returns 404 immediately after cache.put()
-    // because the Cache API hasn't fully committed yet for cross-context reads.
-    const cache = await caches.open('xibo-media-v1');
-
+  private async checkAllMediaCached(mediaIds: number[]): Promise<boolean> {
     for (const mediaId of mediaIds) {
       try {
-        // Check both whole-file and chunked storage directly via Cache API
-        const cacheKey = `${PLAYER_BASE}/cache/media/${mediaId}`;
-        const wholeFile = await cache.match(cacheKey);
-        const metadataResponse = await cache.match(`${cacheKey}/metadata`);
-
-        if (!wholeFile && !metadataResponse) {
+        const cached = await store.has('media', String(mediaId));
+        if (!cached) {
           log.debug(`Media ${mediaId} not yet cached`);
           return false;
         }
-
-        if (metadataResponse) {
-          const metadataText = await metadataResponse.text();
-          const metadata = JSON.parse(metadataText);
-          const sizeMB = (metadata.totalSize / 1024 / 1024).toFixed(1);
-          const isVideo = videoMediaIds.includes(mediaId);
-
-          if (isVideo) {
-            // Video: early playback — need chunk 0 (ftyp header) + last chunk (moov atom).
-            // Download manager prioritizes these two chunks first (out-of-order download).
-            // SW's Range handler retries up to 60s per chunk for middle ones still downloading.
-            const chunk0 = await cache.match(`${cacheKey}/chunk-0`);
-            if (!chunk0) {
-              log.debug(`Media ${mediaId} video: chunk 0 not yet available`);
-              return false;
-            }
-            const lastIdx = metadata.numChunks - 1;
-            if (lastIdx > 0) {
-              const lastChunk = await cache.match(`${cacheKey}/chunk-${lastIdx}`);
-              if (!lastChunk) {
-                log.debug(`Media ${mediaId} video: last chunk (${lastIdx}) not yet available`);
-                return false;
-              }
-            }
-            log.info(`Media ${mediaId} video ready for early playback (chunk 0 + ${lastIdx} of ${metadata.numChunks}, ${sizeMB} MB total)`);
-          } else {
-            // Non-video: require all chunks (last chunk present = all downloaded)
-            const lastChunk = await cache.match(`${cacheKey}/chunk-${metadata.numChunks - 1}`);
-            if (!lastChunk) {
-              log.debug(`Media ${mediaId} chunked but still downloading (chunk ${metadata.numChunks - 1} missing)`);
-              return false;
-            }
-            log.debug(`Media ${mediaId} cached as chunks (${metadata.numChunks} x ${(metadata.chunkSize / 1024 / 1024).toFixed(0)} MB = ${sizeMB} MB total)`);
-          }
-          continue;
-        }
-
-        // Validate cached whole file (detect corrupted entries)
-        if (!wholeFile) continue;
-
-        const contentType = wholeFile.headers.get('Content-Type') || '';
-        const blob = await wholeFile.blob();
-
-        // Check for bad cache
-        if (contentType === 'text/plain' || blob.size < 100) {
-          log.warn(`Media ${mediaId} corrupted (${contentType}, ${blob.size} bytes) - will re-download`);
-          await cache.delete(cacheKey);
-          return false;
-        }
-
-        // Format size appropriately (KB for small files, MB for large)
-        const sizeKB = blob.size / 1024;
-        const sizeMB = sizeKB / 1024;
-        const sizeStr = sizeMB >= 1 ? `${sizeMB.toFixed(1)} MB` : `${sizeKB.toFixed(1)} KB`;
-        log.debug(`Media ${mediaId} cached and valid (${sizeStr})`);
-
+        log.debug(`Media ${mediaId} cached`);
       } catch (error) {
         log.warn(`Unable to verify media ${mediaId}, assuming cached (offline mode)`);
       }
@@ -1483,19 +1420,20 @@ class PwaPlayer {
         // XLF render="html" means CMS provides pre-rendered HTML via getResource.
         // render="native" means player handles the media directly (video, image, audio).
         if (render === 'html') {
-          const cacheKey = `${PLAYER_BASE}/cache/widget/${layoutId}/${regionId}/${widgetId}`;
-
           fetchPromises.push(
             (async () => {
               try {
-                const cache = await caches.open('xibo-media-v1');
-                const cachedResponse = await cache.match(cacheKey);
+                // Check ContentStore for existing widget HTML
+                const storeId = `${layoutId}/${regionId}/${widgetId}`;
+                let html: string | null = null;
 
-                let html: string;
-                if (cachedResponse) {
-                  html = await cachedResponse.text();
+                const existing = await store.get('widget', storeId);
+                if (existing) {
+                  html = await existing.text();
                   log.debug(`Found cached widget HTML for ${type} ${widgetId}`);
-                } else {
+                }
+
+                if (!html) {
                   html = await this.xmds.getResource(layoutId, regionId, widgetId);
                   log.debug(`Retrieved widget HTML for ${type} ${widgetId} from CMS`);
                 }
@@ -1503,7 +1441,8 @@ class PwaPlayer {
                 // to local /cache/static/ paths, and fetches static resources.
                 // cacheWidgetHtml is idempotent — already-rewritten URLs won't re-match.
                 await cacheWidgetHtml(layoutId, regionId, widgetId, html);
-                const processed = await cache.match(cacheKey);
+                // Read back the processed version from ContentStore
+                const processed = await store.get('widget', storeId);
                 if (processed) html = await processed.text();
 
                 // Update raw content in XLF
@@ -1542,7 +1481,7 @@ class PwaPlayer {
     for (const layoutId of this.scheduledLayoutIds) {
 
       try {
-        const xlfBlob = await cacheProxy.getFile('layout', layoutId);
+        const xlfBlob = await store.get('layout', layoutId);
         if (!xlfBlob) continue;
 
         const xlfXml = await xlfBlob.text();
@@ -1562,7 +1501,7 @@ class PwaPlayer {
           const fileId = mediaEl.getAttribute('fileId');
           if (!fileId) continue;
 
-          const exists = await cacheProxy.hasFile('media', fileId);
+          const exists = await store.has('media', fileId);
           if (!exists) continue;
 
           // Probe metadata only — does NOT download the full video
@@ -2169,6 +2108,32 @@ class PwaPlayer {
 
     if (this.timelineOverlay) {
       this.timelineOverlay.destroy();
+    }
+
+    // Disconnect iframe observer
+    if (this._iframeObserver) {
+      this._iframeObserver.disconnect();
+      this._iframeObserver = null;
+    }
+
+    // Remove SW message listeners
+    if (navigator.serviceWorker) {
+      if (this._swIcHandler) {
+        navigator.serviceWorker.removeEventListener('message', this._swIcHandler);
+        this._swIcHandler = null;
+      }
+      if (this._swFileCachedHandler) {
+        navigator.serviceWorker.removeEventListener('message', this._swFileCachedHandler);
+        this._swFileCachedHandler = null;
+      }
+    }
+
+    // Clean up DownloadClient SW listener
+    downloads?.cleanup?.();
+
+    if (this._probeTimer) {
+      clearTimeout(this._probeTimer);
+      this._probeTimer = null;
     }
   }
 }

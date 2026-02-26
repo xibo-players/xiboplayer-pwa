@@ -3,16 +3,19 @@
  * Thin entry point — all reusable logic lives in @xiboplayer/sw
  *
  * Architecture:
- * - @xiboplayer/sw: CacheManager, BlobCache, RequestHandler, MessageHandler
+ * - @xiboplayer/sw: RequestHandler, MessageHandler
  * - @xiboplayer/cache: DownloadManager, LayoutTaskBuilder
+ * - @xiboplayer/proxy: ContentStore (filesystem storage — runs server-side)
  * - This file: PWA-specific wiring (lifecycle events, Interactive Control)
+ *
+ * Media storage flow:
+ *   CMS → proxy /file-proxy → ContentStore (filesystem) → proxy /store → SW → renderer
+ *   The SW orchestrates downloads but never stores media — the proxy does.
  */
 
 import { DownloadManager } from '@xiboplayer/cache/download-manager';
 import { VERSION as CACHE_VERSION } from '@xiboplayer/cache';
 import {
-  CacheManager,
-  BlobCache,
   RequestHandler,
   MessageHandler,
   calculateChunkConfig,
@@ -22,14 +25,6 @@ import { BASE } from '@xiboplayer/sw/utils';
 
 // ── Configuration ──────────────────────────────────────────────────────────
 const SW_VERSION = __BUILD_DATE__;
-const CACHE_NAME = 'xibo-media-v1';
-const STATIC_CACHE = 'xibo-static-v1';
-
-const STATIC_FILES = [
-  BASE + '/',
-  BASE + '/index.html',
-  BASE + '/setup.html'
-];
 
 const log = new SWLogger('SW');
 
@@ -37,7 +32,6 @@ const log = new SWLogger('SW');
 const CHUNK_CONFIG = calculateChunkConfig(log);
 const CHUNK_SIZE = CHUNK_CONFIG.chunkSize;
 const CHUNK_STORAGE_THRESHOLD = CHUNK_CONFIG.threshold;
-const BLOB_CACHE_SIZE_MB = CHUNK_CONFIG.blobCacheSize;
 const CONCURRENT_DOWNLOADS = CHUNK_CONFIG.concurrency;
 
 log.info('Loading modular Service Worker:', SW_VERSION);
@@ -49,20 +43,9 @@ const downloadManager = new DownloadManager({
   chunksPerFile: 2
 });
 
-const cacheManager = new CacheManager({
-  cacheName: CACHE_NAME,
-  chunkSize: CHUNK_SIZE
-});
+const requestHandler = new RequestHandler(downloadManager);
 
-const blobCache = new BlobCache(BLOB_CACHE_SIZE_MB);
-
-const requestHandler = new RequestHandler(downloadManager, cacheManager, blobCache, {
-  staticCache: STATIC_CACHE
-});
-
-const messageHandler = new MessageHandler(downloadManager, cacheManager, blobCache, {
-  cacheName: CACHE_NAME,
-  staticCache: STATIC_CACHE,
+const messageHandler = new MessageHandler(downloadManager, {
   chunkSize: CHUNK_SIZE,
   chunkStorageThreshold: CHUNK_STORAGE_THRESHOLD
 });
@@ -138,18 +121,8 @@ async function handleInteractiveControl(event) {
 self.addEventListener('install', (event) => {
   log.info('Installing... Version:', SW_VERSION);
   event.waitUntil(
-    Promise.all([
-      cacheManager.init(),
-      caches.open(STATIC_CACHE).then((cache) => {
-        log.info('Caching static files');
-        return cache.addAll(STATIC_FILES);
-      })
-    ]).then(async () => {
-      log.info('Cache initialized');
-      // Only skipWaiting if this is a genuinely new version.
-      // Re-activating the same version kills in-flight fetch responses
-      // (e.g. video streams), causing playback stalls.
-      // But always activate if there's no active SW (fresh install or after wipe).
+    (async () => {
+      // Check if same version is already active — skip activation to preserve streams
       if (self.registration.active) {
         try {
           const versionCache = await caches.open('xibo-sw-version');
@@ -158,17 +131,15 @@ self.addEventListener('install', (event) => {
             const activeVersion = await stored.text();
             if (activeVersion === SW_VERSION) {
               log.info('Same version already active, skipping activation to preserve streams');
-              return; // Don't skipWaiting — let the existing SW keep serving
+              return;
             }
             log.info('Version changed:', activeVersion, '→', SW_VERSION);
           }
-        } catch (_) {
-          // Can't read version cache — proceed with skipWaiting
-        }
+        } catch (_) {}
       }
       log.info('New version, activating immediately');
       return self.skipWaiting();
-    })
+    })()
   );
 });
 
@@ -176,23 +147,22 @@ self.addEventListener('install', (event) => {
 self.addEventListener('activate', (event) => {
   log.info('Activating... Version:', SW_VERSION, '| @xiboplayer/cache:', CACHE_VERSION);
   event.waitUntil(
+    // Clean up legacy Cache API caches (migration from pre-ContentStore)
     caches.keys().then((cacheNames) => {
       return Promise.all(
         cacheNames
-          .filter((name) => name.startsWith('xibo-') && name !== CACHE_NAME && name !== STATIC_CACHE && name !== 'xibo-sw-version')
+          .filter((name) => name.startsWith('xibo-') && name !== 'xibo-sw-version')
           .map((name) => {
-            log.info('Deleting old cache:', name);
+            log.info('Deleting legacy cache:', name);
             return caches.delete(name);
           })
       );
     }).then(async () => {
-      // Store current version so future installs can detect same-version reloads
       const versionCache = await caches.open('xibo-sw-version');
       await versionCache.put('version', new Response(SW_VERSION));
       log.info('Taking control of all clients immediately');
       return self.clients.claim();
     }).then(async () => {
-      // Signal to all clients that SW is ready to handle fetch events
       log.info('Notifying all clients that fetch handler is ready');
       const clients = await self.clients.matchAll();
       clients.forEach(client => {
@@ -206,29 +176,25 @@ self.addEventListener('activate', (event) => {
 self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
 
-  // Only intercept specific requests, let everything else pass through
   const shouldIntercept =
-    url.pathname.startsWith(BASE + '/cache/') ||  // Cache requests
-    url.pathname.startsWith(BASE + '/ic/') ||  // Interactive Control requests from widgets
+    url.pathname.startsWith(BASE + '/cache/') ||
+    url.pathname.startsWith(BASE + '/ic/') ||
     url.pathname.startsWith('/player/') && (url.pathname.endsWith('.html') || url.pathname === '/player/') ||
     (url.pathname.includes('xmds.php') && url.searchParams.has('file') && event.request.method === 'GET');
 
   if (shouldIntercept) {
-    // Interactive Control routes - forward to main thread
     if (url.pathname.startsWith(BASE + '/ic/')) {
       event.respondWith(handleInteractiveControl(event));
       return;
     }
     event.respondWith(requestHandler.handleRequest(event));
   }
-  // Let POST requests and other requests pass through without interception
 });
 
 // ── Message handler ────────────────────────────────────────────────────────
 self.addEventListener('message', (event) => {
   event.waitUntil(
     messageHandler.handleMessage(event).then((result) => {
-      // Send response back to client
       event.ports[0]?.postMessage(result);
     })
   );
